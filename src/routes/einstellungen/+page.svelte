@@ -1,6 +1,16 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { getSettings, setSettings } from "$lib/api";
+  import {
+    open as openDialog,
+    save as saveDialog,
+  } from "@tauri-apps/plugin-dialog";
+  import {
+    exportBackup,
+    getSettings,
+    importBackup,
+    setSettings,
+    type BackupSummary,
+  } from "$lib/api";
   import type {
     BetreiberModus,
     BetreiberPeriode,
@@ -17,7 +27,14 @@
   import Input from "$lib/components/ui/Input.svelte";
   import Label from "$lib/components/ui/Label.svelte";
   import Select from "$lib/components/ui/Select.svelte";
-  import { PlusIcon, SaveIcon, Trash2Icon } from "@lucide/svelte";
+  import {
+    DatabaseIcon,
+    DownloadIcon,
+    PlusIcon,
+    SaveIcon,
+    Trash2Icon,
+    UploadIcon,
+  } from "@lucide/svelte";
 
   let settings = $state<Settings | null>(null);
   let error = $state<string | null>(null);
@@ -148,6 +165,60 @@
     { value: "voll", label: "Volleinspeisung" },
     { value: "direktvermarktung", label: "Direktvermarktung" },
   ];
+
+  let backupMsg = $state<string | null>(null);
+  let backupBusy = $state(false);
+
+  function backupSummary(s: BackupSummary): string {
+    return `Tage: ${s.daily} · Auszahlungen: ${s.payouts} · Ausgaben: ${s.expenses} · Anlagen: ${s.assets}`;
+  }
+
+  async function doExportBackup() {
+    backupMsg = null;
+    backupBusy = true;
+    try {
+      const path = await saveDialog({
+        defaultPath: `photovoltaik-backup-${todayISO()}.json`,
+        filters: [{ name: "JSON", extensions: ["json"] }],
+      });
+      if (!path) return;
+      const summary = await exportBackup(path);
+      backupMsg = `Backup exportiert. ${backupSummary(summary)}`;
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      backupBusy = false;
+    }
+  }
+
+  async function doImportBackup() {
+    if (
+      !confirm(
+        "Restore überschreibt ALLE bestehenden Daten dieser App (Tage, " +
+          "Auszahlungen, Ausgaben, Anlagen, Verläufe, Einstellungen) mit dem " +
+          "Inhalt der Backup-Datei. Fortfahren?",
+      )
+    ) {
+      return;
+    }
+    backupMsg = null;
+    backupBusy = true;
+    try {
+      const path = await openDialog({
+        multiple: false,
+        directory: false,
+        filters: [{ name: "JSON", extensions: ["json"] }],
+      });
+      if (!path || typeof path !== "string") return;
+      const summary = await importBackup(path);
+      backupMsg = `Backup importiert. ${backupSummary(summary)}`;
+      await reload();
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      backupBusy = false;
+    }
+  }
 </script>
 
 <div class="space-y-6">
@@ -336,6 +407,33 @@
         <span class="text-sm" style="color: var(--tr-green-dim);">Gespeichert.</span>
       {/if}
     </div>
+
+    <Card>
+      <CardHeader
+        title="Datensicherung"
+        description="Vollständiger Export aller Daten als JSON. Restore überschreibt alles."
+      />
+      <div class="flex flex-wrap items-center gap-3 px-5 py-5">
+        <Button variant="secondary" onclick={doExportBackup} disabled={backupBusy}>
+          <DownloadIcon class="size-4" />Backup exportieren
+        </Button>
+        <Button variant="ghost" onclick={doImportBackup} disabled={backupBusy}>
+          <UploadIcon class="size-4" />Backup importieren
+        </Button>
+        <span class="inline-flex items-center gap-2 text-xs text-[var(--tr-text-faint)]">
+          <DatabaseIcon class="size-3.5" />
+          Datei: <code>photovoltaik.db</code> neben der Executable (WAL-Journal).
+        </span>
+      </div>
+      {#if backupMsg}
+        <div
+          class="border-t border-[var(--tr-line)] px-5 py-2 text-sm"
+          style="color: var(--tr-green-dim); background: var(--tr-green-bg);"
+        >
+          {backupMsg}
+        </div>
+      {/if}
+    </Card>
 
     <Card>
       <CardHeader title="Aktuell hinterlegt — Betreiber-Status" />

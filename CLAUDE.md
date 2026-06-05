@@ -89,6 +89,29 @@ Im Erstjahr pro-rata-temporis nach Monaten ab Inbetriebnahme (Monat der
 Inbetriebnahme zählt voll). Default-Nutzungsdauer 20 Jahre (BMF-AfA-Tabelle für
 PV-Anlagen).
 
+### Export & Backup
+Vier Tauri-Commands für lokale Exporte (Datei-Schreiben direkt via
+`std::fs` in Rust, Pfad kommt aus dem JS-Save/Open-Dialog):
+- `export_buchungen_csv(path, jahr)` — semikolon-getrennt mit UTF-8-BOM,
+  Beträge mit Komma-Dezimaltrenner. Buttons in `/euer` und `/anlage`.
+- `export_anlagen_csv(path)` — Anlagenverzeichnis mit AfA pro Jahr.
+- `export_backup(path)` / `import_backup(path)` — vollständiger JSON-Dump
+  aller Tabellen mit `version`-Feld. Restore läuft in einer Transaktion
+  und überschreibt **alle** bestehenden Daten (UI fragt explizit nach).
+
+ELSTER-Übertragung ist bewusst nicht implementiert — braucht ERiC-Binary
++ Steuersignatur. UStVA-Werte werden gedruckt und manuell via
+Mein ELSTER übertragen.
+
+### Print-Layout
+Druckbares A4-Layout via `window.print()` + `@media print` in
+`src/app.css`. Markup-Konvention:
+- `data-print="hide"` — versteckt beim Drucken (Filter, Buttons, Nav).
+- `data-print="show"` — nur beim Drucken sichtbar (Report-Header mit
+  Zeitraum + Stand-Datum).
+
+Aktiv auf `/euer` und `/ust`.
+
 ### Hersteller-API
 Stub-Command `import_from_vendor(von, bis)`. Erwartet `anker_api_url` und Token
 in den Einstellungen. Aktuell wirft er einen klaren Fehler — der konkrete HTTP-

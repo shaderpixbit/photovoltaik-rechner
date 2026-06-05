@@ -1,12 +1,15 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { getEuer } from "$lib/api";
+  import { save } from "@tauri-apps/plugin-dialog";
+  import { exportBuchungenCsv, getEuer } from "$lib/api";
   import type { EuerReport } from "$lib/types";
-  import { formatEUR } from "$lib/utils";
+  import { formatDateDE, formatEUR, todayISO } from "$lib/utils";
   import Card from "$lib/components/ui/Card.svelte";
   import CardHeader from "$lib/components/ui/CardHeader.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import Label from "$lib/components/ui/Label.svelte";
+  import Button from "$lib/components/ui/Button.svelte";
+  import { DownloadIcon, PrinterIcon } from "@lucide/svelte";
 
   const currentYear = new Date().getFullYear();
   let jahrSel = $state(String(currentYear));
@@ -38,22 +41,76 @@
   let ausgaben = $derived(
     report ? report.ausgaben_betrieb_netto + report.ausgaben_afa : 0,
   );
+
+  let busy = $state(false);
+  let exportMsg = $state<string | null>(null);
+
+  async function exportCsv() {
+    busy = true;
+    exportMsg = null;
+    try {
+      const path = await save({
+        defaultPath: `buchungen-${jahr}.csv`,
+        filters: [{ name: "CSV", extensions: ["csv"] }],
+      });
+      if (!path) return;
+      const n = await exportBuchungenCsv(path, jahr);
+      exportMsg = `${n} Buchung(en) nach CSV exportiert.`;
+      setTimeout(() => (exportMsg = null), 4000);
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  function druck() {
+    window.print();
+  }
 </script>
 
 <div class="space-y-6">
-  <div class="flex items-end justify-between">
+  <div class="flex items-end justify-between" data-print="hide">
     <div>
       <h1 class="text-2xl font-semibold tracking-tight">Einnahmen-Überschuss-Rechnung</h1>
       <p class="text-sm text-[var(--tr-text-dim)]">
         Netto-Werte (Anlage EÜR). Eigenverbrauch nur als unentgeltliche Wertabgabe relevant.
       </p>
     </div>
-    <div class="w-32 space-y-1.5">
-      <Label>Jahr</Label>
-      <Select
-        bind:value={jahrSel}
-        options={jahre.map((y) => ({ value: String(y), label: String(y) }))}
-      />
+    <div class="flex items-end gap-3">
+      <div class="w-32 space-y-1.5">
+        <Label>Jahr</Label>
+        <Select
+          bind:value={jahrSel}
+          options={jahre.map((y) => ({ value: String(y), label: String(y) }))}
+        />
+      </div>
+      <Button variant="ghost" onclick={exportCsv} disabled={busy}>
+        <DownloadIcon class="size-4" />CSV
+      </Button>
+      <Button variant="ghost" onclick={druck}>
+        <PrinterIcon class="size-4" />Drucken / PDF
+      </Button>
+    </div>
+  </div>
+
+  {#if exportMsg}
+    <div
+      class="rounded-md border border-[var(--tr-green)] bg-[var(--tr-green-bg)] px-4 py-2 text-sm"
+      style="color: var(--tr-green-dim);"
+      data-print="hide"
+    >
+      {exportMsg}
+    </div>
+  {/if}
+
+  <div data-print="show" class="border-b border-[var(--tr-line)] pb-3">
+    <div class="text-xs uppercase tracking-wide text-[var(--tr-text-dim)]">
+      Einnahmen-Überschuss-Rechnung
+    </div>
+    <div class="text-lg font-semibold">Jahr {jahr}</div>
+    <div class="text-xs text-[var(--tr-text-dim)]">
+      Stand: {formatDateDE(todayISO())}
     </div>
   </div>
 

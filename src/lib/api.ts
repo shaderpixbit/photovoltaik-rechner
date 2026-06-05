@@ -152,6 +152,38 @@ export async function getExpectedEinspeisung(
   return await invoke("get_expected_einspeisung", { jahr, monat });
 }
 
+/* ── Export / Backup ─────────────────────────────────────────────────────── */
+
+export interface BackupSummary {
+  daily: number;
+  payouts: number;
+  expenses: number;
+  assets: number;
+}
+
+export async function exportBuchungenCsv(
+  path: string,
+  jahr: number,
+): Promise<number> {
+  ensureTauri();
+  return await invoke("export_buchungen_csv", { path, jahr });
+}
+
+export async function exportAnlagenCsv(path: string): Promise<number> {
+  ensureTauri();
+  return await invoke("export_anlagen_csv", { path });
+}
+
+export async function exportBackup(path: string): Promise<BackupSummary> {
+  ensureTauri();
+  return await invoke("export_backup", { path });
+}
+
+export async function importBackup(path: string): Promise<BackupSummary> {
+  ensureTauri();
+  return await invoke("import_backup", { path });
+}
+
 /* ── Anker / Vendor API (Stub) ───────────────────────────────────────────── */
 
 /**

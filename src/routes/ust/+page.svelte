@@ -7,6 +7,9 @@
   import CardHeader from "$lib/components/ui/CardHeader.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import Label from "$lib/components/ui/Label.svelte";
+  import Button from "$lib/components/ui/Button.svelte";
+  import { PrinterIcon } from "@lucide/svelte";
+  import { formatDateDE, todayISO } from "$lib/utils";
 
   const currentYear = new Date().getFullYear();
   let jahrSel = $state(String(currentYear));
@@ -54,10 +57,20 @@
     kleinunternehmer: "Kleinunternehmer §19 UStG",
     nullsteuer: "Nullsteuersatz §12(3) UStG",
   };
+
+  let zeitraumLabel = $derived(
+    monatSel === "alle"
+      ? `Jahr ${jahr}`
+      : `${MONATE.find((m) => m.value === monatSel)?.label ?? monatSel} ${jahr}`,
+  );
+
+  function druck() {
+    window.print();
+  }
 </script>
 
 <div class="space-y-6">
-  <div class="flex items-end justify-between gap-4">
+  <div class="flex items-end justify-between gap-4" data-print="hide">
     <div>
       <h1 class="text-2xl font-semibold tracking-tight">
         Umsatzsteuer-Voranmeldung
@@ -79,6 +92,19 @@
         <Label>Zeitraum</Label>
         <Select bind:value={monatSel} options={MONATE} />
       </div>
+      <Button variant="ghost" onclick={druck}>
+        <PrinterIcon class="size-4" />Drucken / PDF
+      </Button>
+    </div>
+  </div>
+
+  <div data-print="show" class="border-b border-[var(--tr-line)] pb-3">
+    <div class="text-xs uppercase tracking-wide text-[var(--tr-text-dim)]">
+      Umsatzsteuer-Voranmeldung
+    </div>
+    <div class="text-lg font-semibold">{zeitraumLabel}</div>
+    <div class="text-xs text-[var(--tr-text-dim)]">
+      Stand: {formatDateDE(todayISO())}
     </div>
   </div>
 

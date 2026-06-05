@@ -100,6 +100,52 @@
   --tr-text-faint: #7A818C;
 }
 
+/* ── Print: A4-tauglicher Report-Druck ──
+   Markup-Convention:
+   - data-print="hide"  → wird beim Druck ausgeblendet (Buttons, Nav, Filter)
+   - data-print="show"  → wird nur beim Druck eingeblendet (Druck-Header)
+*/
+@media print {
+  :root {
+    --tr-bg: #ffffff;
+    --tr-surface: #ffffff;
+    --tr-surface2: #ffffff;
+    --tr-line: #d0d0d0;
+    --tr-text: #000000;
+    --tr-text-dim: #333333;
+    --tr-text-faint: #555555;
+  }
+  body {
+    background: #fff !important;
+    color: #000 !important;
+  }
+  header,
+  nav,
+  [data-print="hide"] {
+    display: none !important;
+  }
+  [data-print="show"] {
+    display: block !important;
+  }
+  main {
+    max-width: none !important;
+    padding: 0 !important;
+  }
+  .shadow,
+  .shadow-sm,
+  .shadow-md,
+  .shadow-lg {
+    box-shadow: none !important;
+  }
+  @page {
+    size: A4;
+    margin: 18mm 14mm;
+  }
+}
+[data-print="show"] {
+  display: none;
+}
+
 @theme inline {
   --font-sans: 'Inter Variable', sans-serif;
   --font-mono: 'IBM Plex Mono', monospace;

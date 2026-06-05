@@ -1,6 +1,12 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { deleteAsset, listAssets, upsertAsset } from "$lib/api";
+  import { save as saveDialog } from "@tauri-apps/plugin-dialog";
+  import {
+    deleteAsset,
+    exportAnlagenCsv,
+    listAssets,
+    upsertAsset,
+  } from "$lib/api";
   import type { Asset } from "$lib/types";
   import { formatDateDE, formatEUR, todayISO } from "$lib/utils";
   import Card from "$lib/components/ui/Card.svelte";
@@ -8,7 +14,13 @@
   import Button from "$lib/components/ui/Button.svelte";
   import Input from "$lib/components/ui/Input.svelte";
   import Label from "$lib/components/ui/Label.svelte";
-  import { PlusIcon, SaveIcon, Trash2Icon, XIcon } from "@lucide/svelte";
+  import {
+    DownloadIcon,
+    PlusIcon,
+    SaveIcon,
+    Trash2Icon,
+    XIcon,
+  } from "@lucide/svelte";
 
   let assets = $state<Asset[]>([]);
   let editing = $state<Asset | null>(null);
@@ -102,6 +114,22 @@
   }
 
   const today = todayISO();
+
+  let exportMsg = $state<string | null>(null);
+  async function exportCsv() {
+    try {
+      const path = await saveDialog({
+        defaultPath: "anlagenverzeichnis.csv",
+        filters: [{ name: "CSV", extensions: ["csv"] }],
+      });
+      if (!path) return;
+      const n = await exportAnlagenCsv(path);
+      exportMsg = `${n} Anlage(n) exportiert.`;
+      setTimeout(() => (exportMsg = null), 4000);
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
+  }
 </script>
 
 <div class="space-y-6">
@@ -112,10 +140,24 @@
         Anschaffungskosten + Nutzungsdauer → lineare AfA (Standard 20 Jahre).
       </p>
     </div>
-    <Button variant="primary" onclick={() => (editing = leer())}>
-      <PlusIcon class="size-4" />Neue Anlage
-    </Button>
+    <div class="flex items-end gap-2">
+      <Button variant="ghost" onclick={exportCsv}>
+        <DownloadIcon class="size-4" />CSV
+      </Button>
+      <Button variant="primary" onclick={() => (editing = leer())}>
+        <PlusIcon class="size-4" />Neue Anlage
+      </Button>
+    </div>
   </div>
+
+  {#if exportMsg}
+    <div
+      class="rounded-md border border-[var(--tr-green)] bg-[var(--tr-green-bg)] px-4 py-2 text-sm"
+      style="color: var(--tr-green-dim);"
+    >
+      {exportMsg}
+    </div>
+  {/if}
 
   {#if error}
     <Card><div class="p-5 text-sm text-[var(--tr-red)]">{error}</div></Card>

@@ -1328,6 +1328,476 @@ fn get_expected_einspeisung(
     })
 }
 
+// ── CSV / JSON Export ───────────────────────────────────────────────────────
+
+fn csv_escape(s: &str) -> String {
+    if s.contains(';') || s.contains('"') || s.contains('\n') || s.contains('\r') {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
+fn fmt_de(v: f64) -> String {
+    format!("{:.2}", v).replace('.', ",")
+}
+
+#[command]
+fn export_buchungen_csv(state: State<DbState>, path: String, jahr: i32) -> Result<i64, String> {
+    let db = state.0.lock().map_err(|e| e.to_string())?;
+    let jahr_start = format!("{:04}-01-01", jahr);
+    let jahr_end = format!("{:04}-12-31", jahr);
+
+    let mut out = String::new();
+    out.push_str(
+        "Datum;Typ;Beleg;Beschreibung;Kategorie;Netto;USt;Brutto;Vorsteuer\r\n",
+    );
+    let mut rows: i64 = 0;
+
+    // Einnahmen aus Auszahlungen
+    let mut stmt = db
+        .prepare(
+            "SELECT id, buchung_date, zeitraum_von, zeitraum_bis, netto, ust, brutto, notiz
+             FROM payouts
+             WHERE buchung_date BETWEEN ?1 AND ?2
+             ORDER BY buchung_date ASC, id ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let payout_rows = stmt
+        .query_map(params![jahr_start, jahr_end], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, f64>(4)?,
+                r.get::<_, f64>(5)?,
+                r.get::<_, f64>(6)?,
+                r.get::<_, Option<String>>(7)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    for row in payout_rows.flatten() {
+        let (id, datum, von, bis, netto, ust, brutto, notiz) = row;
+        let beschreibung = format!(
+            "Einspeisevergütung {} – {}{}",
+            von,
+            bis,
+            notiz.map(|n| format!(" ({})", n)).unwrap_or_default()
+        );
+        out.push_str(&format!(
+            "{};Einnahme;Auszahlung-{};{};{};{};{};{};\r\n",
+            datum,
+            id,
+            csv_escape(&beschreibung),
+            csv_escape("Einspeisung"),
+            fmt_de(netto),
+            fmt_de(ust),
+            fmt_de(brutto),
+        ));
+        rows += 1;
+    }
+
+    // Ausgaben
+    let mut stmt = db
+        .prepare(
+            "SELECT id, date, kategorie, beschreibung, netto, ust, brutto, vorsteuer_abzugsfaehig
+             FROM expenses
+             WHERE date BETWEEN ?1 AND ?2
+             ORDER BY date ASC, id ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let exp_rows = stmt
+        .query_map(params![jahr_start, jahr_end], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, f64>(4)?,
+                r.get::<_, f64>(5)?,
+                r.get::<_, f64>(6)?,
+                r.get::<_, i64>(7)? != 0,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    for row in exp_rows.flatten() {
+        let (id, datum, kat, beschr, netto, ust, brutto, vsa) = row;
+        let vorsteuer = if vsa { fmt_de(ust) } else { String::new() };
+        out.push_str(&format!(
+            "{};Ausgabe;Ausgabe-{};{};{};{};{};{};{}\r\n",
+            datum,
+            id,
+            csv_escape(&beschr),
+            csv_escape(&kat),
+            fmt_de(netto),
+            fmt_de(ust),
+            fmt_de(brutto),
+            vorsteuer,
+        ));
+        rows += 1;
+    }
+
+    // UTF-8 BOM voranstellen, damit Excel die Sonderzeichen erkennt.
+    let mut bytes = Vec::with_capacity(out.len() + 3);
+    bytes.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
+    bytes.extend_from_slice(out.as_bytes());
+    std::fs::write(&path, bytes).map_err(|e| format!("Datei schreiben fehlgeschlagen: {}", e))?;
+    Ok(rows)
+}
+
+#[command]
+fn export_anlagen_csv(state: State<DbState>, path: String) -> Result<i64, String> {
+    let db = state.0.lock().map_err(|e| e.to_string())?;
+    let assets = list_assets_internal(&db).map_err(|e| e.to_string())?;
+    let mut out = String::new();
+    out.push_str(
+        "Name;Inbetriebnahme;Anschaffung Netto;Anschaffung USt;Anschaffung Brutto;\
+         Nutzungsdauer (Jahre);AfA pro Jahr;Notiz\r\n",
+    );
+    for a in &assets {
+        let basis = a.anschaffung_netto + a.anschaffung_ust;
+        let afa = basis / (a.nutzungsdauer_jahre.max(1) as f64);
+        out.push_str(&format!(
+            "{};{};{};{};{};{};{};{}\r\n",
+            csv_escape(&a.name),
+            a.inbetriebnahme,
+            fmt_de(a.anschaffung_netto),
+            fmt_de(a.anschaffung_ust),
+            fmt_de(basis),
+            a.nutzungsdauer_jahre,
+            fmt_de(afa),
+            csv_escape(a.notiz.as_deref().unwrap_or("")),
+        ));
+    }
+    let mut bytes = Vec::with_capacity(out.len() + 3);
+    bytes.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
+    bytes.extend_from_slice(out.as_bytes());
+    std::fs::write(&path, bytes).map_err(|e| format!("Datei schreiben fehlgeschlagen: {}", e))?;
+    Ok(assets.len() as i64)
+}
+
+#[derive(Serialize, Deserialize)]
+struct Backup {
+    version: u32,
+    exported_at: String,
+    daily_production: Vec<DailyProduction>,
+    payouts: Vec<Payout>,
+    expenses: Vec<Expense>,
+    assets: Vec<Asset>,
+    ust_perioden: Vec<UstPeriode>,
+    betreiber_perioden: Vec<BetreiberPeriode>,
+    verguetung_perioden: Vec<VerguetungPeriode>,
+    settings: SettingsKV,
+}
+
+#[derive(Serialize, Deserialize, Default)]
+struct SettingsKV {
+    ust_satz_regel: f64,
+    eigenverbrauch_preis: f64,
+    strom_bezugspreis: f64,
+    anker_api_url: Option<String>,
+    anker_api_token: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct BackupSummary {
+    pub daily: i64,
+    pub payouts: i64,
+    pub expenses: i64,
+    pub assets: i64,
+}
+
+fn collect_backup(conn: &Connection) -> Result<Backup, rusqlite::Error> {
+    let mut stmt = conn.prepare(
+        "SELECT date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh, notiz
+         FROM daily_production ORDER BY date ASC",
+    )?;
+    let daily: Vec<DailyProduction> = stmt
+        .query_map([], |r| {
+            Ok(DailyProduction {
+                date: r.get(0)?,
+                erzeugung_kwh: r.get(1)?,
+                eigenverbrauch_kwh: r.get(2)?,
+                einspeisung_kwh: r.get(3)?,
+                netzbezug_kwh: r.get(4)?,
+                notiz: r.get(5)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let mut stmt = conn.prepare(
+        "SELECT id, buchung_date, zeitraum_von, zeitraum_bis, netto, ust, brutto, kwh, notiz
+         FROM payouts ORDER BY id ASC",
+    )?;
+    let payouts: Vec<Payout> = stmt
+        .query_map([], |r| {
+            Ok(Payout {
+                id: r.get(0)?,
+                buchung_date: r.get(1)?,
+                zeitraum_von: r.get(2)?,
+                zeitraum_bis: r.get(3)?,
+                netto: r.get(4)?,
+                ust: r.get(5)?,
+                brutto: r.get(6)?,
+                kwh: r.get(7)?,
+                notiz: r.get(8)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let mut stmt = conn.prepare(
+        "SELECT id, date, kategorie, beschreibung, netto, ust, brutto, vorsteuer_abzugsfaehig
+         FROM expenses ORDER BY id ASC",
+    )?;
+    let expenses: Vec<Expense> = stmt
+        .query_map([], |r| {
+            Ok(Expense {
+                id: r.get(0)?,
+                date: r.get(1)?,
+                kategorie: r.get(2)?,
+                beschreibung: r.get(3)?,
+                netto: r.get(4)?,
+                ust: r.get(5)?,
+                brutto: r.get(6)?,
+                vorsteuer_abzugsfaehig: r.get::<_, i64>(7)? != 0,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let assets = list_assets_internal(conn)?;
+    let ust_perioden = load_perioden(conn)?;
+    let betreiber_perioden = load_betreiber_perioden(conn)?;
+    let verguetung_perioden = load_verguetung_perioden(conn)?;
+
+    let settings = SettingsKV {
+        ust_satz_regel: get_setting_f64(conn, "ust_satz_regel", 0.19),
+        eigenverbrauch_preis: get_setting_f64(conn, "eigenverbrauch_preis", 0.20),
+        strom_bezugspreis: get_setting_f64(conn, "strom_bezugspreis", 0.35),
+        anker_api_url: get_setting(conn, "anker_api_url")?.filter(|s| !s.is_empty()),
+        anker_api_token: get_setting(conn, "anker_api_token")?.filter(|s| !s.is_empty()),
+    };
+
+    Ok(Backup {
+        version: 1,
+        exported_at: Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
+        daily_production: daily,
+        payouts,
+        expenses,
+        assets,
+        ust_perioden,
+        betreiber_perioden,
+        verguetung_perioden,
+        settings,
+    })
+}
+
+#[command]
+fn export_backup(state: State<DbState>, path: String) -> Result<BackupSummary, String> {
+    let db = state.0.lock().map_err(|e| e.to_string())?;
+    let backup = collect_backup(&db).map_err(|e| e.to_string())?;
+    let summary = BackupSummary {
+        daily: backup.daily_production.len() as i64,
+        payouts: backup.payouts.len() as i64,
+        expenses: backup.expenses.len() as i64,
+        assets: backup.assets.len() as i64,
+    };
+    let json = serde_json::to_string_pretty(&backup).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| format!("Datei schreiben fehlgeschlagen: {}", e))?;
+    Ok(summary)
+}
+
+#[command]
+fn import_backup(state: State<DbState>, path: String) -> Result<BackupSummary, String> {
+    let json = std::fs::read_to_string(&path)
+        .map_err(|e| format!("Datei lesen fehlgeschlagen: {}", e))?;
+    let backup: Backup = serde_json::from_str(&json)
+        .map_err(|e| format!("JSON-Format ungültig: {}", e))?;
+    if backup.version != 1 {
+        return Err(format!(
+            "Unbekannte Backup-Version {} (erwartet 1).",
+            backup.version
+        ));
+    }
+
+    let mut db = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = db.transaction().map_err(|e| e.to_string())?;
+
+    tx.execute("DELETE FROM daily_production", [])
+        .map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM payouts", [])
+        .map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM expenses", [])
+        .map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM assets", [])
+        .map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM ust_perioden", [])
+        .map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM betreiber_perioden", [])
+        .map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM verguetung_perioden", [])
+        .map_err(|e| e.to_string())?;
+
+    for d in &backup.daily_production {
+        tx.execute(
+            "INSERT INTO daily_production
+             (date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh, notiz)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                d.date,
+                d.erzeugung_kwh,
+                d.eigenverbrauch_kwh,
+                d.einspeisung_kwh,
+                d.netzbezug_kwh,
+                d.notiz
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    for p in &backup.payouts {
+        tx.execute(
+            "INSERT INTO payouts
+             (buchung_date, zeitraum_von, zeitraum_bis, netto, ust, brutto, kwh, notiz)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+            params![
+                p.buchung_date,
+                p.zeitraum_von,
+                p.zeitraum_bis,
+                p.netto,
+                p.ust,
+                p.brutto,
+                p.kwh,
+                p.notiz
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    for e in &backup.expenses {
+        tx.execute(
+            "INSERT INTO expenses
+             (date, kategorie, beschreibung, netto, ust, brutto, vorsteuer_abzugsfaehig)
+             VALUES (?1,?2,?3,?4,?5,?6,?7)",
+            params![
+                e.date,
+                e.kategorie,
+                e.beschreibung,
+                e.netto,
+                e.ust,
+                e.brutto,
+                if e.vorsteuer_abzugsfaehig { 1i64 } else { 0i64 }
+            ],
+        )
+        .map_err(|err| err.to_string())?;
+    }
+    for a in &backup.assets {
+        tx.execute(
+            "INSERT INTO assets
+             (name, inbetriebnahme, anschaffung_netto, anschaffung_ust,
+              nutzungsdauer_jahre, notiz)
+             VALUES (?1,?2,?3,?4,?5,?6)",
+            params![
+                a.name,
+                a.inbetriebnahme,
+                a.anschaffung_netto,
+                a.anschaffung_ust,
+                a.nutzungsdauer_jahre,
+                a.notiz
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    for p in &backup.ust_perioden {
+        tx.execute(
+            "INSERT INTO ust_perioden (effective_from, modus) VALUES (?1, ?2)",
+            params![p.effective_from, p.modus],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    for p in &backup.betreiber_perioden {
+        tx.execute(
+            "INSERT INTO betreiber_perioden (effective_from, modus) VALUES (?1, ?2)",
+            params![p.effective_from, p.modus],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    for p in &backup.verguetung_perioden {
+        tx.execute(
+            "INSERT INTO verguetung_perioden (effective_from, modell, satz_ct_per_kwh)
+             VALUES (?1, ?2, ?3)",
+            params![p.effective_from, p.modell, p.satz_ct_per_kwh],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    // Re-seed Defaults bei leeren Pflicht-Verläufen.
+    let cnt: i64 = tx
+        .query_row("SELECT COUNT(*) FROM ust_perioden", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    if cnt == 0 {
+        tx.execute(
+            "INSERT INTO ust_perioden (effective_from, modus) VALUES ('2000-01-01', 'regel')",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    let cnt: i64 = tx
+        .query_row("SELECT COUNT(*) FROM betreiber_perioden", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    if cnt == 0 {
+        tx.execute(
+            "INSERT INTO betreiber_perioden (effective_from, modus)
+             VALUES ('2000-01-01', 'gewerblich')",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    // Settings (Key/Value)
+    let s = &backup.settings;
+    tx.execute(
+        "INSERT INTO settings (key, value) VALUES ('ust_satz_regel', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![s.ust_satz_regel.to_string()],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO settings (key, value) VALUES ('eigenverbrauch_preis', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![s.eigenverbrauch_preis.to_string()],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO settings (key, value) VALUES ('strom_bezugspreis', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![s.strom_bezugspreis.to_string()],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO settings (key, value) VALUES ('anker_api_url', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![s.anker_api_url.clone().unwrap_or_default()],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO settings (key, value) VALUES ('anker_api_token', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![s.anker_api_token.clone().unwrap_or_default()],
+    )
+    .map_err(|e| e.to_string())?;
+
+    tx.commit().map_err(|e| e.to_string())?;
+
+    Ok(BackupSummary {
+        daily: backup.daily_production.len() as i64,
+        payouts: backup.payouts.len() as i64,
+        expenses: backup.expenses.len() as i64,
+        assets: backup.assets.len() as i64,
+    })
+}
+
 // ── Vendor-API Import (Stub) ────────────────────────────────────────────────
 
 #[derive(Serialize)]
@@ -1392,6 +1862,10 @@ pub fn run() {
             get_euer,
             get_ustva,
             get_expected_einspeisung,
+            export_buchungen_csv,
+            export_anlagen_csv,
+            export_backup,
+            import_backup,
             import_from_vendor,
         ])
         .run(tauri::generate_context!())
