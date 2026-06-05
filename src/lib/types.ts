@@ -116,13 +116,27 @@ export interface VerguetungPeriode {
   satz_ct_per_kwh: number;
 }
 
+/**
+ * Stromtarif-Verlauf für den Netzbezug. Wird für die Ersparnis-Berechnung
+ * im Dashboard taggenau ausgewertet. Grundgebühr ist informativ (€/Monat),
+ * fließt nicht automatisch in EÜR — gehört dort als separater Aufwand
+ * gebucht.
+ */
+export interface StromtarifPeriode {
+  id: number;
+  effective_from: string;
+  arbeitspreis_eur_per_kwh: number;
+  grundgebuehr_eur_per_monat: number;
+}
+
 export interface Settings {
   ust_perioden: UstPeriode[];
   betreiber_perioden: BetreiberPeriode[];
   verguetung_perioden: VerguetungPeriode[];
+  stromtarif_perioden: StromtarifPeriode[];
   ust_satz_regel: number;
   eigenverbrauch_preis: number;
-  /** Strom-Bezugspreis (€/kWh) für Ersparnis-Berechnung im Privatmodus. */
+  /** Fallback-Arbeitspreis (€/kWh) — greift wenn kein Tarif-Eintrag existiert. */
   strom_bezugspreis: number;
   anker_api_url: string | null;
   anker_api_token: string | null;

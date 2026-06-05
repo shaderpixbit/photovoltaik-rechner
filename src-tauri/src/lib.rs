@@ -104,12 +104,22 @@ pub struct VerguetungPeriode {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct StromtarifPeriode {
+    pub id: i64,
+    pub effective_from: String,
+    pub arbeitspreis_eur_per_kwh: f64,
+    pub grundgebuehr_eur_per_monat: f64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Settings {
     pub ust_perioden: Vec<UstPeriode>,
     pub betreiber_perioden: Vec<BetreiberPeriode>,
     pub verguetung_perioden: Vec<VerguetungPeriode>,
+    pub stromtarif_perioden: Vec<StromtarifPeriode>,
     pub ust_satz_regel: f64,
     pub eigenverbrauch_preis: f64,
+    /// Fallback-Arbeitspreis (€/kWh) — wenn kein Tarif-Eintrag für ein Datum existiert.
     pub strom_bezugspreis: f64,
     #[serde(default)]
     pub anker_api_url: Option<String>,
@@ -268,6 +278,13 @@ fn create_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
             effective_from      TEXT NOT NULL,
             modell              TEXT NOT NULL,
             satz_ct_per_kwh     REAL NOT NULL DEFAULT 0
+         );
+
+         CREATE TABLE IF NOT EXISTS stromtarif_perioden (
+            id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+            effective_from              TEXT NOT NULL,
+            arbeitspreis_eur_per_kwh    REAL NOT NULL DEFAULT 0,
+            grundgebuehr_eur_per_monat  REAL NOT NULL DEFAULT 0
          );
 
          CREATE TABLE IF NOT EXISTS settings (
@@ -433,6 +450,49 @@ fn load_verguetung_perioden(conn: &Connection) -> Result<Vec<VerguetungPeriode>,
         .filter_map(|r| r.ok())
         .collect();
     Ok(rows)
+}
+
+fn load_stromtarif_perioden(conn: &Connection) -> Result<Vec<StromtarifPeriode>, rusqlite::Error> {
+    let mut stmt = conn.prepare(
+        "SELECT id, effective_from, arbeitspreis_eur_per_kwh, grundgebuehr_eur_per_monat
+         FROM stromtarif_perioden ORDER BY effective_from ASC",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(StromtarifPeriode {
+                id: r.get(0)?,
+                effective_from: r.get(1)?,
+                arbeitspreis_eur_per_kwh: r.get(2)?,
+                grundgebuehr_eur_per_monat: r.get(3)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(rows)
+}
+
+/// Liefert Arbeitspreis (€/kWh) und Grundgebühr (€/Monat) am Stichtag.
+/// Fällt auf das Setting `strom_bezugspreis` zurück, wenn kein Eintrag existiert.
+fn stromtarif_for(
+    perioden: &[StromtarifPeriode],
+    date: &str,
+    fallback_arbeitspreis: f64,
+) -> (f64, f64) {
+    let mut arbeit = fallback_arbeitspreis;
+    let mut grund = 0.0;
+    let mut hit = false;
+    for p in perioden {
+        if p.effective_from.as_str() <= date {
+            arbeit = p.arbeitspreis_eur_per_kwh;
+            grund = p.grundgebuehr_eur_per_monat;
+            hit = true;
+        }
+    }
+    if !hit {
+        (fallback_arbeitspreis, 0.0)
+    } else {
+        (arbeit, grund)
+    }
 }
 
 /// Picks the modus active on `date` (the latest period whose effective_from ≤ date).
@@ -832,6 +892,7 @@ fn get_settings(state: State<DbState>) -> Result<Settings, String> {
     let ust_perioden = load_perioden(&db).map_err(|e| e.to_string())?;
     let betreiber_perioden = load_betreiber_perioden(&db).map_err(|e| e.to_string())?;
     let verguetung_perioden = load_verguetung_perioden(&db).map_err(|e| e.to_string())?;
+    let stromtarif_perioden = load_stromtarif_perioden(&db).map_err(|e| e.to_string())?;
     let url = get_setting(&db, "anker_api_url")
         .map_err(|e| e.to_string())?
         .filter(|s| !s.is_empty());
@@ -842,6 +903,7 @@ fn get_settings(state: State<DbState>) -> Result<Settings, String> {
         ust_perioden,
         betreiber_perioden,
         verguetung_perioden,
+        stromtarif_perioden,
         ust_satz_regel: get_setting_f64(&db, "ust_satz_regel", 0.19),
         eigenverbrauch_preis: get_setting_f64(&db, "eigenverbrauch_preis", 0.20),
         strom_bezugspreis: get_setting_f64(&db, "strom_bezugspreis", 0.35),
@@ -922,6 +984,22 @@ fn set_settings(state: State<DbState>, settings: Settings) -> Result<(), String>
             "INSERT INTO verguetung_perioden (effective_from, modell, satz_ct_per_kwh)
              VALUES (?1, ?2, ?3)",
             params![p.effective_from, p.modell, p.satz_ct_per_kwh],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    db.execute("DELETE FROM stromtarif_perioden", [])
+        .map_err(|e| e.to_string())?;
+    for p in &settings.stromtarif_perioden {
+        db.execute(
+            "INSERT INTO stromtarif_perioden
+             (effective_from, arbeitspreis_eur_per_kwh, grundgebuehr_eur_per_monat)
+             VALUES (?1, ?2, ?3)",
+            params![
+                p.effective_from,
+                p.arbeitspreis_eur_per_kwh,
+                p.grundgebuehr_eur_per_monat
+            ],
         )
         .map_err(|e| e.to_string())?;
     }
@@ -1064,16 +1142,29 @@ fn get_dashboard(state: State<DbState>) -> Result<DashboardSnapshot, String> {
         )
         .map_err(|e| e.to_string())?;
 
-    let ev_kwh_jahr: f64 = db
-        .query_row(
-            "SELECT COALESCE(SUM(eigenverbrauch_kwh), 0) FROM daily_production
-             WHERE date BETWEEN ?1 AND ?2",
-            params![jahr_start, today_iso],
-            |r| r.get::<_, f64>(0),
-        )
-        .map_err(|e| e.to_string())?;
-    let bezugspreis = get_setting_f64(&db, "strom_bezugspreis", 0.35);
-    let einsparung_jahr = ev_kwh_jahr * bezugspreis;
+    let stromtarif_perioden = load_stromtarif_perioden(&db).map_err(|e| e.to_string())?;
+    let bezugspreis_fallback = get_setting_f64(&db, "strom_bezugspreis", 0.35);
+    // Taggenau aufsummieren: ohne Tarif-Verlauf wird der Fallback verwendet.
+    let einsparung_jahr: f64 = {
+        let mut stmt = db
+            .prepare(
+                "SELECT date, eigenverbrauch_kwh FROM daily_production
+                 WHERE date BETWEEN ?1 AND ?2",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![jahr_start, today_iso], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut sum = 0.0;
+        for row in rows.flatten() {
+            let (date, kwh) = row;
+            let (arbeit, _) = stromtarif_for(&stromtarif_perioden, &date, bezugspreis_fallback);
+            sum += kwh * arbeit;
+        }
+        sum
+    };
 
     let betreiber_perioden = load_betreiber_perioden(&db).map_err(|e| e.to_string())?;
     let betreiber_modus = betreiber_modus_for(&betreiber_perioden, &today_iso);
@@ -1650,6 +1741,8 @@ struct Backup {
     ust_perioden: Vec<UstPeriode>,
     betreiber_perioden: Vec<BetreiberPeriode>,
     verguetung_perioden: Vec<VerguetungPeriode>,
+    #[serde(default)]
+    stromtarif_perioden: Vec<StromtarifPeriode>,
     settings: SettingsKV,
 }
 
@@ -1734,6 +1827,7 @@ fn collect_backup(conn: &Connection) -> Result<Backup, rusqlite::Error> {
     let ust_perioden = load_perioden(conn)?;
     let betreiber_perioden = load_betreiber_perioden(conn)?;
     let verguetung_perioden = load_verguetung_perioden(conn)?;
+    let stromtarif_perioden = load_stromtarif_perioden(conn)?;
 
     let settings = SettingsKV {
         ust_satz_regel: get_setting_f64(conn, "ust_satz_regel", 0.19),
@@ -1753,6 +1847,7 @@ fn collect_backup(conn: &Connection) -> Result<Backup, rusqlite::Error> {
         ust_perioden,
         betreiber_perioden,
         verguetung_perioden,
+        stromtarif_perioden,
         settings,
     })
 }
@@ -1801,6 +1896,8 @@ fn import_backup(state: State<DbState>, path: String) -> Result<BackupSummary, S
     tx.execute("DELETE FROM betreiber_perioden", [])
         .map_err(|e| e.to_string())?;
     tx.execute("DELETE FROM verguetung_perioden", [])
+        .map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM stromtarif_perioden", [])
         .map_err(|e| e.to_string())?;
 
     for d in &backup.daily_production {
@@ -1896,6 +1993,19 @@ fn import_backup(state: State<DbState>, path: String) -> Result<BackupSummary, S
             "INSERT INTO verguetung_perioden (effective_from, modell, satz_ct_per_kwh)
              VALUES (?1, ?2, ?3)",
             params![p.effective_from, p.modell, p.satz_ct_per_kwh],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    for p in &backup.stromtarif_perioden {
+        tx.execute(
+            "INSERT INTO stromtarif_perioden
+             (effective_from, arbeitspreis_eur_per_kwh, grundgebuehr_eur_per_monat)
+             VALUES (?1, ?2, ?3)",
+            params![
+                p.effective_from,
+                p.arbeitspreis_eur_per_kwh,
+                p.grundgebuehr_eur_per_monat
+            ],
         )
         .map_err(|e| e.to_string())?;
     }

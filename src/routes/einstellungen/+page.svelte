@@ -16,6 +16,7 @@
     BetreiberPeriode,
     EinspeiseModell,
     Settings,
+    StromtarifPeriode,
     UstModus,
     UstPeriode,
     VerguetungPeriode,
@@ -123,6 +124,26 @@
     );
   }
 
+  function addStromtarifPeriode() {
+    if (!settings) return;
+    const neu: StromtarifPeriode = {
+      id: tempId(),
+      effective_from: todayISO(),
+      arbeitspreis_eur_per_kwh: bezugPreis || 0.35,
+      grundgebuehr_eur_per_monat: 0,
+    };
+    settings.stromtarif_perioden = [...settings.stromtarif_perioden, neu].sort(
+      (a, b) => a.effective_from.localeCompare(b.effective_from),
+    );
+  }
+
+  function removeStromtarifPeriode(id: number) {
+    if (!settings) return;
+    settings.stromtarif_perioden = settings.stromtarif_perioden.filter(
+      (p) => p.id !== id,
+    );
+  }
+
   async function save() {
     if (!settings) return;
     error = null;
@@ -139,6 +160,9 @@
         (a, b) => a.effective_from.localeCompare(b.effective_from),
       );
       settings.verguetung_perioden = [...settings.verguetung_perioden].sort(
+        (a, b) => a.effective_from.localeCompare(b.effective_from),
+      );
+      settings.stromtarif_perioden = [...settings.stromtarif_perioden].sort(
         (a, b) => a.effective_from.localeCompare(b.effective_from),
       );
       await setSettings(settings);
@@ -355,6 +379,55 @@
     </Card>
 
     <Card>
+      <CardHeader
+        title="Stromtarif-Verlauf"
+        description="Arbeitspreis (€/kWh) und optional Grundgebühr (€/Monat). Wird für die Ersparnis-Berechnung im Dashboard taggenau ausgewertet."
+      />
+      <div class="divide-y divide-[var(--tr-line)]">
+        {#each settings.stromtarif_perioden as p (p.id)}
+          <div class="grid grid-cols-1 items-end gap-3 px-5 py-3 md:grid-cols-4">
+            <div class="space-y-1.5">
+              <Label>Gültig ab</Label>
+              <DateField bind:value={p.effective_from} />
+            </div>
+            <div class="space-y-1.5">
+              <Label>Arbeitspreis (€ / kWh)</Label>
+              <Input
+                type="number"
+                step="0.0001"
+                bind:value={p.arbeitspreis_eur_per_kwh}
+              />
+            </div>
+            <div class="space-y-1.5">
+              <Label>Grundgebühr (€ / Monat)</Label>
+              <Input
+                type="number"
+                step="0.01"
+                bind:value={p.grundgebuehr_eur_per_monat}
+              />
+            </div>
+            <div class="flex items-end">
+              <Button variant="ghost" onclick={() => removeStromtarifPeriode(p.id)}>
+                <Trash2Icon class="size-4" />Entfernen
+              </Button>
+            </div>
+          </div>
+        {/each}
+        {#if settings.stromtarif_perioden.length === 0}
+          <div class="px-5 py-3 text-xs text-[var(--tr-text-dim)]">
+            Kein Tarif hinterlegt — die Ersparnis fällt auf den Fallback-Preis
+            unten zurück.
+          </div>
+        {/if}
+      </div>
+      <div class="border-t border-[var(--tr-line)] px-5 py-3">
+        <Button variant="secondary" onclick={addStromtarifPeriode}>
+          <PlusIcon class="size-4" />Periode hinzufügen
+        </Button>
+      </div>
+    </Card>
+
+    <Card>
       <CardHeader title="Steuersätze & Preise" />
       <div class="grid grid-cols-1 gap-4 px-5 py-5 md:grid-cols-3">
         <div class="space-y-1.5">
@@ -369,10 +442,10 @@
           </p>
         </div>
         <div class="space-y-1.5">
-          <Label>Strom-Bezugspreis (€ / kWh)</Label>
+          <Label>Strom-Bezugspreis (€ / kWh) — Fallback</Label>
           <Input type="number" step="0.01" bind:value={bezugPreis} />
           <p class="text-xs text-[var(--tr-text-dim)]">
-            Für die Ersparnis-Anzeige im Privatmodus (vermiedener Netzbezug).
+            Greift nur, wenn kein Stromtarif-Eintrag oben hinterlegt ist.
           </p>
         </div>
       </div>
@@ -479,6 +552,33 @@
         {:else}
           <li class="px-5 py-2 text-xs text-[var(--tr-text-dim)]">
             Keine Vergütungssätze hinterlegt.
+          </li>
+        {/each}
+      </ul>
+    </Card>
+
+    <Card>
+      <CardHeader title="Aktuell hinterlegt — Stromtarif" />
+      <ul class="divide-y divide-[var(--tr-line)] text-sm">
+        {#each settings.stromtarif_perioden as p (p.id)}
+          <li class="flex items-center justify-between px-5 py-2">
+            <span class="font-mono">ab {formatDateDE(p.effective_from)}</span>
+            <span>
+              {p.arbeitspreis_eur_per_kwh.toLocaleString("de-DE", {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 4,
+              })} €/kWh
+              {#if p.grundgebuehr_eur_per_monat > 0}
+                · {p.grundgebuehr_eur_per_monat.toLocaleString("de-DE", {
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2,
+                })} €/Monat Grundgebühr
+              {/if}
+            </span>
+          </li>
+        {:else}
+          <li class="px-5 py-2 text-xs text-[var(--tr-text-dim)]">
+            Kein Stromtarif hinterlegt.
           </li>
         {/each}
       </ul>

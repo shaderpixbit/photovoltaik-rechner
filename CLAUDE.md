@@ -78,6 +78,13 @@ Einspeisevergütung. `get_expected_einspeisung(jahr, monat?)` summiert
 `Σ einspeisung_kwh × satz_eur` taggenau aus dem Verlauf; ohne hinterlegten
 Satz für einen Tag mit Einspeisung → `tage_ohne_satz` als Hinweis.
 
+**Stromtarif** (`stromtarif_perioden`) — Arbeitspreis (€/kWh) und optional
+Grundgebühr (€/Monat). Wirkt auf die Privat-Ersparnis im Dashboard
+(`einsparung_jahr`), taggenau aus dem Verlauf. Fallback bei leerem Verlauf
+ist `settings.strom_bezugspreis`. Helper: `stromtarif_for(perioden, date,
+fallback)`. Die Grundgebühr ist informativ — fließt nicht automatisch in
+EÜR, gehört dort als separater Betriebsaufwand gebucht.
+
 EÜR (`get_euer`) wertet pro Tag den jeweils gültigen USt-Modus aus und nimmt
 den Betreiber-Status am Jahresende. UStVA (`get_ustva`) verwendet den USt-Modus
 am Periodenende.
