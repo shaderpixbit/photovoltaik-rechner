@@ -1,0 +1,128 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "@fontsource-variable/inter";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+@import "@fontsource/ibm-plex-mono/600.css";
+
+@variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+}
+
+:root {
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --radius: 0.625rem;
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+}
+
+/* ── Troiber design tokens (Sonnenfarbe ergänzt) ── */
+:root {
+  --tr-red: #DA2B29;
+  --tr-red-dim: #B92220;
+  --tr-red-bg: #FCEDED;
+  --tr-green: #68C52F;
+  --tr-green-dim: #4F9C22;
+  --tr-green-bg: #EFF8E7;
+  --tr-warning: #C68A17;
+  --tr-warning-bg: #FBF3E0;
+  --tr-sun: #F5B400;
+  --tr-sun-bg: #FFF6D7;
+  --tr-bg: #F1F2F4;
+  --tr-surface: #FFFFFF;
+  --tr-surface2: #F8F9FA;
+  --tr-line: #E4E6EA;
+  --tr-line-hi: #C9CDD3;
+  --tr-text: #0E0F11;
+  --tr-text-dim: #555C68;
+  --tr-text-faint: #7A818C;
+}
+.dark {
+  --tr-red-bg: #3A1717;
+  --tr-green-bg: #1B2C18;
+  --tr-warning: #E0A93B;
+  --tr-warning-bg: #3A2C12;
+  --tr-sun: #F5C744;
+  --tr-sun-bg: #3A3214;
+  --tr-bg: #141720;
+  --tr-surface: #1A1D23;
+  --tr-surface2: #222630;
+  --tr-line: #2A2F38;
+  --tr-line-hi: #353B45;
+  --tr-text: #E6E8EC;
+  --tr-text-dim: #A4AAB3;
+  --tr-text-faint: #7A818C;
+}
+
+@theme inline {
+  --font-sans: 'Inter Variable', sans-serif;
+  --font-mono: 'IBM Plex Mono', monospace;
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+}

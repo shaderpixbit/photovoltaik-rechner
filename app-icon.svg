@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFC65A" />
+      <stop offset="1" stop-color="#F5872A" />
+    </linearGradient>
+    <linearGradient id="coin" x1="0" y1="0" x2="0.4" y2="1">
+      <stop offset="0" stop-color="#FFF0C2" />
+      <stop offset="1" stop-color="#F4A92C" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#bg)" />
+  <path d="M237.2 107.2 L256.0 44.0 L274.8 107.2 Z M295.6 111.3 L337.1 60.1 L330.3 125.7 Z M347.9 137.5 L405.9 106.1 L374.5 164.1 Z M386.3 181.7 L451.9 174.9 L400.7 216.4 Z M404.8 237.2 L468.0 256.0 L404.8 274.8 Z M400.7 295.6 L451.9 337.1 L386.3 330.3 Z M374.5 347.9 L405.9 405.9 L347.9 374.5 Z M330.3 386.3 L337.1 451.9 L295.6 400.7 Z M274.8 404.8 L256.0 468.0 L237.2 404.8 Z M216.4 400.7 L174.9 451.9 L181.7 386.3 Z M164.1 374.5 L106.1 405.9 L137.5 347.9 Z M125.7 330.3 L60.1 337.1 L111.3 295.6 Z M107.2 274.8 L44.0 256.0 L107.2 237.2 Z M111.3 216.4 L60.1 174.9 L125.7 181.7 Z M137.5 164.1 L106.1 106.1 L164.1 137.5 Z M181.7 125.7 L174.9 60.1 L216.4 111.3 Z" fill="#FFF4D6" opacity="0.92" />
+  <circle cx="256" cy="256" r="146" fill="url(#coin)" />
+  <circle cx="256" cy="256" r="146" fill="none" stroke="#ffffff" stroke-opacity="0.55" stroke-width="6" />
+  <circle cx="256" cy="256" r="120" fill="none" stroke="#C7791A" stroke-opacity="0.30" stroke-width="4" />
+  <text x="256" y="258" text-anchor="middle" dominant-baseline="central"
+        font-family="Manrope, 'DejaVu Sans', sans-serif" font-weight="800" font-size="184" fill="#B5560E">€</text>
+</svg>

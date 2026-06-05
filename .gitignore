@@ -1,0 +1,15 @@
+node_modules
+.svelte-kit
+build
+.DS_Store
+.env
+.env.local
+src-tauri/target
+src-tauri/gen
+*.bak
+photovoltaik.db
+photovoltaik.db-journal
+photovoltaik.db-wal
+photovoltaik.db-shm
+.cargo
+.direnv
