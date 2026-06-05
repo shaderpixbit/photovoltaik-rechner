@@ -15,6 +15,7 @@
   import Input from "$lib/components/ui/Input.svelte";
   import Label from "$lib/components/ui/Label.svelte";
   import DateField from "$lib/components/ui/DateField.svelte";
+  import MonthField from "$lib/components/ui/MonthField.svelte";
   import { CloudDownloadIcon, SaveIcon, Trash2Icon } from "@lucide/svelte";
 
   type Mode = "tag" | "monat" | "jahr";
@@ -336,7 +337,7 @@
           <DateField id="date" bind:value={dateValue} />
         {:else if mode === "monat"}
           <Label for="month">Monat</Label>
-          <Input id="month" type="month" bind:value={monthValue} />
+          <MonthField id="month" bind:value={monthValue} />
         {:else}
           <Label for="year">Jahr</Label>
           <Input
