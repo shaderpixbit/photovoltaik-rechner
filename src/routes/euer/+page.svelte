@@ -35,11 +35,18 @@
 
   let einnahmen = $derived(
     report
-      ? report.einnahmen_einspeisung_netto + report.einnahmen_eigenverbrauch_netto
+      ? report.einnahmen_einspeisung_netto +
+          report.einnahmen_eigenverbrauch_netto +
+          report.einnahmen_veraeusserung_netto
       : 0,
   );
   let ausgaben = $derived(
-    report ? report.ausgaben_betrieb_netto + report.ausgaben_afa : 0,
+    report
+      ? report.ausgaben_betrieb_netto +
+          report.ausgaben_afa +
+          report.ausgaben_sonder_afa +
+          report.ausgaben_restbuchwert_abgang
+      : 0,
   );
 
   let busy = $state(false);
@@ -157,6 +164,14 @@
               {formatEUR(report.einnahmen_eigenverbrauch_netto)}
             </dd>
           </div>
+          {#if report.einnahmen_veraeusserung_netto !== 0}
+            <div class="flex items-center justify-between px-5 py-3">
+              <dt class="text-sm">Anlagenverkauf (Erlös netto)</dt>
+              <dd class="font-mono text-sm">
+                {formatEUR(report.einnahmen_veraeusserung_netto)}
+              </dd>
+            </div>
+          {/if}
           <div
             class="flex items-center justify-between px-5 py-3 font-semibold"
             style="background: var(--tr-green-bg);"
@@ -177,9 +192,35 @@
             </dd>
           </div>
           <div class="flex items-center justify-between px-5 py-3">
-            <dt class="text-sm">Abschreibung (AfA)</dt>
+            <dt class="text-sm">Lineare AfA</dt>
             <dd class="font-mono text-sm">{formatEUR(report.ausgaben_afa)}</dd>
           </div>
+          {#if report.ausgaben_sonder_afa !== 0}
+            <div class="flex items-center justify-between px-5 py-3">
+              <dt class="text-sm">
+                Sonder-AfA §7g Abs. 5 EStG
+                <span class="ml-1 text-xs text-[var(--tr-text-faint)]">
+                  (im Erstjahr)
+                </span>
+              </dt>
+              <dd class="font-mono text-sm">
+                {formatEUR(report.ausgaben_sonder_afa)}
+              </dd>
+            </div>
+          {/if}
+          {#if report.ausgaben_restbuchwert_abgang !== 0}
+            <div class="flex items-center justify-between px-5 py-3">
+              <dt class="text-sm">
+                Restbuchwert Anlagenabgang
+                <span class="ml-1 text-xs text-[var(--tr-text-faint)]">
+                  (Verkauf)
+                </span>
+              </dt>
+              <dd class="font-mono text-sm">
+                {formatEUR(report.ausgaben_restbuchwert_abgang)}
+              </dd>
+            </div>
+          {/if}
           <div
             class="flex items-center justify-between px-5 py-3 font-semibold"
             style="background: var(--tr-red-bg);"

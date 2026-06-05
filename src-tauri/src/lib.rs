@@ -58,8 +58,24 @@ pub struct Asset {
     pub anschaffung_netto: f64,
     pub anschaffung_ust: f64,
     pub nutzungsdauer_jahre: i64,
+    /// "linear" (default) | "gwg_sofort"
+    #[serde(default = "default_afa_methode")]
+    pub afa_methode: String,
+    /// Sonderabschreibung §7g Abs. 5 EStG im Erstjahr (0..50 in Prozent der AK).
+    #[serde(default)]
+    pub sonderabschreibung_prozent: f64,
+    #[serde(default)]
+    pub verkauft_am: Option<String>,
+    #[serde(default)]
+    pub verkaufserloes_netto: Option<f64>,
+    #[serde(default)]
+    pub verkaufserloes_ust: Option<f64>,
     #[serde(default)]
     pub notiz: Option<String>,
+}
+
+fn default_afa_methode() -> String {
+    "linear".to_string()
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -115,10 +131,13 @@ pub struct EuerReport {
     pub jahr: i32,
     pub einnahmen_einspeisung_netto: f64,
     pub einnahmen_eigenverbrauch_netto: f64,
+    pub einnahmen_veraeusserung_netto: f64,
     pub einnahmen_ust: f64,
     pub ausgaben_betrieb_netto: f64,
     pub ausgaben_betrieb_ust: f64,
     pub ausgaben_afa: f64,
+    pub ausgaben_sonder_afa: f64,
+    pub ausgaben_restbuchwert_abgang: f64,
     pub vorsteuer: f64,
     pub gewinn_vor_steuern: f64,
     pub betreiber_modus: String,
@@ -155,6 +174,9 @@ pub struct DashboardSnapshot {
     pub jahr_kwh: f64,
     pub max_tag: Option<DailyProduction>,
     pub einnahmen_jahr: f64,
+    /// Eigenverbrauch im Jahr × Strom-Bezugspreis (€) — vermiedene Stromkosten.
+    pub einsparung_jahr: f64,
+    pub betreiber_modus: String,
 }
 
 // ── DB path & connection ────────────────────────────────────────────────────
@@ -254,6 +276,21 @@ fn create_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
          );",
     )?;
     add_column_if_missing(conn, "daily_production", "netzbezug_kwh", "REAL")?;
+    add_column_if_missing(
+        conn,
+        "assets",
+        "afa_methode",
+        "TEXT NOT NULL DEFAULT 'linear'",
+    )?;
+    add_column_if_missing(
+        conn,
+        "assets",
+        "sonderabschreibung_prozent",
+        "REAL NOT NULL DEFAULT 0",
+    )?;
+    add_column_if_missing(conn, "assets", "verkauft_am", "TEXT")?;
+    add_column_if_missing(conn, "assets", "verkaufserloes_netto", "REAL")?;
+    add_column_if_missing(conn, "assets", "verkaufserloes_ust", "REAL")?;
     Ok(())
 }
 
@@ -688,28 +725,36 @@ fn delete_expense(state: State<DbState>, id: i64) -> Result<(), String> {
 
 // ── Assets / AfA ────────────────────────────────────────────────────────────
 
+const ASSET_COLS: &str = "id, name, inbetriebnahme, anschaffung_netto, anschaffung_ust,
+    nutzungsdauer_jahre, afa_methode, sonderabschreibung_prozent,
+    verkauft_am, verkaufserloes_netto, verkaufserloes_ust, notiz";
+
+fn map_asset(r: &rusqlite::Row) -> rusqlite::Result<Asset> {
+    Ok(Asset {
+        id: r.get(0)?,
+        name: r.get(1)?,
+        inbetriebnahme: r.get(2)?,
+        anschaffung_netto: r.get(3)?,
+        anschaffung_ust: r.get(4)?,
+        nutzungsdauer_jahre: r.get(5)?,
+        afa_methode: r.get(6)?,
+        sonderabschreibung_prozent: r.get(7)?,
+        verkauft_am: r.get(8)?,
+        verkaufserloes_netto: r.get(9)?,
+        verkaufserloes_ust: r.get(10)?,
+        notiz: r.get(11)?,
+    })
+}
+
 #[command]
 fn list_assets(state: State<DbState>) -> Result<Vec<Asset>, String> {
     let db = state.0.lock().map_err(|e| e.to_string())?;
-    let mut stmt = db
-        .prepare(
-            "SELECT id, name, inbetriebnahme, anschaffung_netto, anschaffung_ust,
-                    nutzungsdauer_jahre, notiz
-             FROM assets ORDER BY inbetriebnahme ASC, id ASC",
-        )
-        .map_err(|e| e.to_string())?;
+    let sql = format!(
+        "SELECT {ASSET_COLS} FROM assets ORDER BY inbetriebnahme ASC, id ASC"
+    );
+    let mut stmt = db.prepare(&sql).map_err(|e| e.to_string())?;
     let rows: Vec<Asset> = stmt
-        .query_map([], |r| {
-            Ok(Asset {
-                id: r.get(0)?,
-                name: r.get(1)?,
-                inbetriebnahme: r.get(2)?,
-                anschaffung_netto: r.get(3)?,
-                anschaffung_ust: r.get(4)?,
-                nutzungsdauer_jahre: r.get(5)?,
-                notiz: r.get(6)?,
-            })
-        })
+        .query_map([], map_asset)
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
@@ -723,14 +768,22 @@ fn upsert_asset(state: State<DbState>, asset: Asset) -> Result<i64, String> {
         db.execute(
             "UPDATE assets SET
                 name = ?1, inbetriebnahme = ?2, anschaffung_netto = ?3,
-                anschaffung_ust = ?4, nutzungsdauer_jahre = ?5, notiz = ?6
-             WHERE id = ?7",
+                anschaffung_ust = ?4, nutzungsdauer_jahre = ?5,
+                afa_methode = ?6, sonderabschreibung_prozent = ?7,
+                verkauft_am = ?8, verkaufserloes_netto = ?9, verkaufserloes_ust = ?10,
+                notiz = ?11
+             WHERE id = ?12",
             params![
                 asset.name,
                 asset.inbetriebnahme,
                 asset.anschaffung_netto,
                 asset.anschaffung_ust,
                 asset.nutzungsdauer_jahre,
+                asset.afa_methode,
+                asset.sonderabschreibung_prozent,
+                asset.verkauft_am,
+                asset.verkaufserloes_netto,
+                asset.verkaufserloes_ust,
                 asset.notiz,
                 asset.id
             ],
@@ -741,14 +794,20 @@ fn upsert_asset(state: State<DbState>, asset: Asset) -> Result<i64, String> {
         db.execute(
             "INSERT INTO assets
              (name, inbetriebnahme, anschaffung_netto, anschaffung_ust,
-              nutzungsdauer_jahre, notiz)
-             VALUES (?1,?2,?3,?4,?5,?6)",
+              nutzungsdauer_jahre, afa_methode, sonderabschreibung_prozent,
+              verkauft_am, verkaufserloes_netto, verkaufserloes_ust, notiz)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
             params![
                 asset.name,
                 asset.inbetriebnahme,
                 asset.anschaffung_netto,
                 asset.anschaffung_ust,
                 asset.nutzungsdauer_jahre,
+                asset.afa_methode,
+                asset.sonderabschreibung_prozent,
+                asset.verkauft_am,
+                asset.verkaufserloes_netto,
+                asset.verkaufserloes_ust,
                 asset.notiz
             ],
         )
@@ -1005,6 +1064,20 @@ fn get_dashboard(state: State<DbState>) -> Result<DashboardSnapshot, String> {
         )
         .map_err(|e| e.to_string())?;
 
+    let ev_kwh_jahr: f64 = db
+        .query_row(
+            "SELECT COALESCE(SUM(eigenverbrauch_kwh), 0) FROM daily_production
+             WHERE date BETWEEN ?1 AND ?2",
+            params![jahr_start, today_iso],
+            |r| r.get::<_, f64>(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let bezugspreis = get_setting_f64(&db, "strom_bezugspreis", 0.35);
+    let einsparung_jahr = ev_kwh_jahr * bezugspreis;
+
+    let betreiber_perioden = load_betreiber_perioden(&db).map_err(|e| e.to_string())?;
+    let betreiber_modus = betreiber_modus_for(&betreiber_perioden, &today_iso);
+
     Ok(DashboardSnapshot {
         heute,
         woche_kwh,
@@ -1012,30 +1085,100 @@ fn get_dashboard(state: State<DbState>) -> Result<DashboardSnapshot, String> {
         jahr_kwh,
         max_tag,
         einnahmen_jahr,
+        einsparung_jahr,
+        betreiber_modus,
     })
 }
 
 // ── EÜR ─────────────────────────────────────────────────────────────────────
 
+/// Aktive AfA-Monate eines Jahres, abhängig von Inbetriebnahme und (optional)
+/// Verkauf. Erstjahr ab Inbetriebnahmemonat, Letztjahr bis Verkaufsmonat
+/// (Monat des Verkaufs zählt nicht mehr — übliche Praxis).
+fn afa_monate(asset: &Asset, jahr: i32) -> i32 {
+    let Some(ib) = NaiveDate::parse_from_str(&asset.inbetriebnahme, "%Y-%m-%d").ok() else {
+        return 0;
+    };
+    let start = if jahr == ib.year() { ib.month() as i32 } else { 1 };
+    let mut ende = 12;
+    if jahr < ib.year() {
+        return 0;
+    }
+    if let Some(va) = asset
+        .verkauft_am
+        .as_deref()
+        .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+    {
+        if jahr > va.year() {
+            return 0;
+        }
+        if jahr == va.year() {
+            ende = (va.month() as i32) - 1;
+        }
+    }
+    (ende - start + 1).max(0)
+}
+
+fn afa_basis(asset: &Asset) -> f64 {
+    asset.anschaffung_netto + asset.anschaffung_ust
+}
+
+/// Reguläre AfA im Jahr — kombiniert lineare, GWG-Sofort und Verkauf.
+/// Sonder-AfA wird separat in `sonder_afa_for_year` ausgewiesen.
 fn afa_for_year(asset: &Asset, jahr: i32) -> f64 {
-    let nd = asset.nutzungsdauer_jahre.max(1) as f64;
-    let basis = asset.anschaffung_netto + asset.anschaffung_ust;
-    let yearly = basis / nd;
-    let ib = NaiveDate::parse_from_str(&asset.inbetriebnahme, "%Y-%m-%d").ok();
-    let Some(ib) = ib else {
+    let Some(ib) = NaiveDate::parse_from_str(&asset.inbetriebnahme, "%Y-%m-%d").ok() else {
         return 0.0;
     };
-    let start_year = ib.year();
-    let end_year = start_year + asset.nutzungsdauer_jahre as i32 - 1;
-    if jahr < start_year || jahr > end_year {
+    if asset.afa_methode == "gwg_sofort" {
+        return if jahr == ib.year() { afa_basis(asset) } else { 0.0 };
+    }
+    // linear
+    let nd = asset.nutzungsdauer_jahre.max(1) as f64;
+    let yearly = afa_basis(asset) / nd;
+    let monate = afa_monate(asset, jahr) as f64;
+    if monate <= 0.0 {
         return 0.0;
     }
-    if jahr == start_year {
-        // Pro-rata for the start year (Monate ab Inbetriebnahme / 12).
-        let monate = (13 - ib.month() as i32) as f64;
-        return yearly * (monate / 12.0);
+    let end_year = ib.year() + asset.nutzungsdauer_jahre as i32 - 1;
+    if jahr > end_year {
+        return 0.0;
     }
-    yearly
+    yearly * (monate / 12.0)
+}
+
+/// Sonder-AfA §7g Abs. 5 EStG — einmalig im Inbetriebnahmejahr, prozentual auf AK.
+fn sonder_afa_for_year(asset: &Asset, jahr: i32) -> f64 {
+    if asset.afa_methode == "gwg_sofort" {
+        return 0.0;
+    }
+    let Some(ib) = NaiveDate::parse_from_str(&asset.inbetriebnahme, "%Y-%m-%d").ok() else {
+        return 0.0;
+    };
+    if jahr != ib.year() {
+        return 0.0;
+    }
+    let pct = asset.sonderabschreibung_prozent.clamp(0.0, 50.0);
+    afa_basis(asset) * pct / 100.0
+}
+
+/// Kumulierte Abschreibung (linear + Sonder-AfA) bis einschließlich `jahr`.
+fn afa_kumuliert_bis(asset: &Asset, jahr: i32) -> f64 {
+    let Some(ib) = NaiveDate::parse_from_str(&asset.inbetriebnahme, "%Y-%m-%d").ok() else {
+        return 0.0;
+    };
+    let mut sum = 0.0;
+    for y in ib.year()..=jahr {
+        sum += afa_for_year(asset, y) + sonder_afa_for_year(asset, y);
+    }
+    let basis = afa_basis(asset);
+    if sum > basis {
+        sum = basis;
+    }
+    sum
+}
+
+fn restbuchwert_bis(asset: &Asset, jahr: i32) -> f64 {
+    (afa_basis(asset) - afa_kumuliert_bis(asset, jahr)).max(0.0)
 }
 
 #[command]
@@ -1113,10 +1256,30 @@ fn get_euer(state: State<DbState>, jahr: i32) -> Result<EuerReport, String> {
 
     let assets = list_assets_internal(&db).map_err(|e| e.to_string())?;
     let ausgaben_afa: f64 = assets.iter().map(|a| afa_for_year(a, jahr)).sum();
+    let ausgaben_sonder_afa: f64 = assets.iter().map(|a| sonder_afa_for_year(a, jahr)).sum();
+
+    // Anlagenverkäufe im Jahr: Erlös netto (Einnahme), Restbuchwert zum
+    // Beginn des Verkaufsjahres als Aufwand (Abgang). Differenz = Veräußerungs-
+    // gewinn/-verlust und fließt automatisch in den Gewinn.
+    let mut einnahmen_veraeusserung_netto = 0.0;
+    let mut ausgaben_restbuchwert_abgang = 0.0;
+    for a in &assets {
+        if let Some(va) = a
+            .verkauft_am
+            .as_deref()
+            .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+        {
+            if va.year() == jahr {
+                einnahmen_veraeusserung_netto += a.verkaufserloes_netto.unwrap_or(0.0);
+                ausgaben_restbuchwert_abgang += restbuchwert_bis(a, jahr);
+            }
+        }
+    }
 
     let einnahmen_ust = einnahmen_ust_einsp + ev_ust;
-    let einnahmen = einnahmen_einspeisung_netto + ev_netto;
-    let ausgaben = ausgaben_betrieb_netto + ausgaben_afa;
+    let einnahmen = einnahmen_einspeisung_netto + ev_netto + einnahmen_veraeusserung_netto;
+    let ausgaben =
+        ausgaben_betrieb_netto + ausgaben_afa + ausgaben_sonder_afa + ausgaben_restbuchwert_abgang;
     let gewinn = einnahmen - ausgaben;
 
     let betreiber_modus = betreiber_modus_for(&betreiber_perioden, &jahr_end);
@@ -1138,10 +1301,13 @@ fn get_euer(state: State<DbState>, jahr: i32) -> Result<EuerReport, String> {
         jahr,
         einnahmen_einspeisung_netto,
         einnahmen_eigenverbrauch_netto: ev_netto,
+        einnahmen_veraeusserung_netto,
         einnahmen_ust,
         ausgaben_betrieb_netto,
         ausgaben_betrieb_ust,
         ausgaben_afa,
+        ausgaben_sonder_afa,
+        ausgaben_restbuchwert_abgang,
         vorsteuer,
         gewinn_vor_steuern: gewinn,
         betreiber_modus,
@@ -1151,23 +1317,10 @@ fn get_euer(state: State<DbState>, jahr: i32) -> Result<EuerReport, String> {
 }
 
 fn list_assets_internal(conn: &Connection) -> Result<Vec<Asset>, rusqlite::Error> {
-    let mut stmt = conn.prepare(
-        "SELECT id, name, inbetriebnahme, anschaffung_netto, anschaffung_ust,
-                nutzungsdauer_jahre, notiz
-         FROM assets",
-    )?;
+    let sql = format!("SELECT {ASSET_COLS} FROM assets ORDER BY inbetriebnahme ASC, id ASC");
+    let mut stmt = conn.prepare(&sql)?;
     let rows = stmt
-        .query_map([], |r| {
-            Ok(Asset {
-                id: r.get(0)?,
-                name: r.get(1)?,
-                inbetriebnahme: r.get(2)?,
-                anschaffung_netto: r.get(3)?,
-                anschaffung_ust: r.get(4)?,
-                nutzungsdauer_jahre: r.get(5)?,
-                notiz: r.get(6)?,
-            })
-        })?
+        .query_map([], map_asset)?
         .filter_map(|r| r.ok())
         .collect();
     Ok(rows)
@@ -1207,7 +1360,7 @@ fn get_ustva(
     // Aktiver Modus = Modus am Periodenende (Stichtag).
     let modus = modus_for(&perioden, &to);
 
-    let ust_einnahmen: f64 = db
+    let ust_einnahmen_payouts: f64 = db
         .query_row(
             "SELECT COALESCE(SUM(ust), 0) FROM payouts
              WHERE buchung_date BETWEEN ?1 AND ?2",
@@ -1215,6 +1368,15 @@ fn get_ustva(
             |r| r.get::<_, f64>(0),
         )
         .map_err(|e| e.to_string())?;
+    let ust_einnahmen_verkauf: f64 = db
+        .query_row(
+            "SELECT COALESCE(SUM(verkaufserloes_ust), 0) FROM assets
+             WHERE verkauft_am IS NOT NULL AND verkauft_am BETWEEN ?1 AND ?2",
+            params![from, to],
+            |r| r.get::<_, f64>(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let ust_einnahmen = ust_einnahmen_payouts + ust_einnahmen_verkauf;
 
     let ev_kwh: f64 = db
         .query_row(
@@ -1696,14 +1858,20 @@ fn import_backup(state: State<DbState>, path: String) -> Result<BackupSummary, S
         tx.execute(
             "INSERT INTO assets
              (name, inbetriebnahme, anschaffung_netto, anschaffung_ust,
-              nutzungsdauer_jahre, notiz)
-             VALUES (?1,?2,?3,?4,?5,?6)",
+              nutzungsdauer_jahre, afa_methode, sonderabschreibung_prozent,
+              verkauft_am, verkaufserloes_netto, verkaufserloes_ust, notiz)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
             params![
                 a.name,
                 a.inbetriebnahme,
                 a.anschaffung_netto,
                 a.anschaffung_ust,
                 a.nutzungsdauer_jahre,
+                a.afa_methode,
+                a.sonderabschreibung_prozent,
+                a.verkauft_am,
+                a.verkaufserloes_netto,
+                a.verkaufserloes_ust,
                 a.notiz
             ],
         )

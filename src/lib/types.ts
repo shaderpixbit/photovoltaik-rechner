@@ -45,6 +45,15 @@ export interface Expense {
   vorsteuer_abzugsfaehig: boolean;
 }
 
+/**
+ * AfA-Methode für ein Wirtschaftsgut:
+ * - `linear` — lineare AfA über `nutzungsdauer_jahre`, pro-rata im Erstjahr.
+ *   Bei Verkauf läuft die AfA bis zum Vormonat des Verkaufs.
+ * - `gwg_sofort` — geringwertiges Wirtschaftsgut (§6 Abs. 2 EStG, netto ≤ 800 €).
+ *   Komplette AK im Anschaffungsjahr als Aufwand, danach 0.
+ */
+export type AfaMethode = "linear" | "gwg_sofort";
+
 export interface Asset {
   id: number;
   name: string;
@@ -52,6 +61,12 @@ export interface Asset {
   anschaffung_netto: number;
   anschaffung_ust: number;
   nutzungsdauer_jahre: number;
+  afa_methode: AfaMethode;
+  /** Sonderabschreibung §7g Abs. 5 EStG im Erstjahr (0–50 % der AK). */
+  sonderabschreibung_prozent: number;
+  verkauft_am: string | null;
+  verkaufserloes_netto: number | null;
+  verkaufserloes_ust: number | null;
   notiz: string | null;
 }
 
@@ -130,10 +145,13 @@ export interface EuerReport {
   jahr: number;
   einnahmen_einspeisung_netto: number;
   einnahmen_eigenverbrauch_netto: number;
+  einnahmen_veraeusserung_netto: number;
   einnahmen_ust: number;
   ausgaben_betrieb_netto: number;
   ausgaben_betrieb_ust: number;
   ausgaben_afa: number;
+  ausgaben_sonder_afa: number;
+  ausgaben_restbuchwert_abgang: number;
   vorsteuer: number;
   gewinn_vor_steuern: number;
   betreiber_modus: BetreiberModus;
@@ -167,4 +185,7 @@ export interface DashboardSnapshot {
   jahr_kwh: number;
   max_tag: DailyProduction | null;
   einnahmen_jahr: number;
+  /** Vermiedene Stromkosten = Σ Eigenverbrauch im Jahr × Strom-Bezugspreis. */
+  einsparung_jahr: number;
+  betreiber_modus: BetreiberModus;
 }

@@ -14,6 +14,7 @@
   import Button from "$lib/components/ui/Button.svelte";
   import Input from "$lib/components/ui/Input.svelte";
   import Label from "$lib/components/ui/Label.svelte";
+  import Select from "$lib/components/ui/Select.svelte";
   import {
     DownloadIcon,
     PlusIcon,
@@ -21,6 +22,11 @@
     Trash2Icon,
     XIcon,
   } from "@lucide/svelte";
+
+  const AFA_METHODEN = [
+    { value: "linear", label: "Linear (Standard)" },
+    { value: "gwg_sofort", label: "GWG-Sofortabzug (≤800 € netto)" },
+  ];
 
   let assets = $state<Asset[]>([]);
   let editing = $state<Asset | null>(null);
@@ -34,6 +40,11 @@
       anschaffung_netto: 0,
       anschaffung_ust: 0,
       nutzungsdauer_jahre: 20,
+      afa_methode: "linear",
+      sonderabschreibung_prozent: 0,
+      verkauft_am: null,
+      verkaufserloes_netto: null,
+      verkaufserloes_ust: null,
       notiz: null,
     };
   }
@@ -63,23 +74,39 @@
     await reload();
   }
 
-  function afaProJahr(a: Asset): number {
-    const basis = a.anschaffung_netto + a.anschaffung_ust;
-    return basis / Math.max(1, a.nutzungsdauer_jahre);
+  function basis(a: Asset): number {
+    return a.anschaffung_netto + a.anschaffung_ust;
   }
 
+  function afaProJahr(a: Asset): number {
+    if (a.afa_methode === "gwg_sofort") return basis(a);
+    return basis(a) / Math.max(1, a.nutzungsdauer_jahre);
+  }
+
+  /**
+   * Lineare AfA + einmalige Sonder-AfA, bis zum jeweiligen Stichtag. Endet im
+   * Verkaufsmonat (Vormonat). Bei `gwg_sofort` voll im Inbetriebnahmejahr.
+   */
   function abgeschriebenBis(a: Asset, heute: string): number {
     const start = new Date(a.inbetriebnahme);
     const now = new Date(heute);
-    if (now < start) return 0;
-    const monate =
-      (now.getFullYear() - start.getFullYear()) * 12 +
-      (now.getMonth() - start.getMonth()) +
-      1;
-    const proMonat = afaProJahr(a) / 12;
-    const wert = monate * proMonat;
-    const basis = a.anschaffung_netto + a.anschaffung_ust;
-    return Math.min(wert, basis);
+    if (Number.isNaN(start.getTime()) || now < start) return 0;
+    const b = basis(a);
+    if (a.afa_methode === "gwg_sofort") return b;
+    const ende = a.verkauft_am ? new Date(a.verkauft_am) : now;
+    const stichtag = ende < now ? ende : now;
+    const monateGesamt =
+      (stichtag.getFullYear() - start.getFullYear()) * 12 +
+      (stichtag.getMonth() - start.getMonth()) +
+      (a.verkauft_am ? 0 : 1);
+    const proMonat = (b / Math.max(1, a.nutzungsdauer_jahre)) / 12;
+    const sonder = (b * (a.sonderabschreibung_prozent ?? 0)) / 100;
+    const linear = Math.max(0, monateGesamt) * proMonat;
+    return Math.min(b, linear + sonder);
+  }
+
+  function restbuchwert(a: Asset, heute: string): number {
+    return Math.max(0, basis(a) - abgeschriebenBis(a, heute));
   }
 
   /**
@@ -187,6 +214,75 @@
           <Label>Nutzungsdauer (Jahre)</Label>
           <Input type="number" min="1" bind:value={editing.nutzungsdauer_jahre} />
         </div>
+        <div class="space-y-1.5 md:col-span-2">
+          <Label>AfA-Methode</Label>
+          <Select
+            bind:value={editing.afa_methode as unknown as string}
+            options={AFA_METHODEN}
+          />
+        </div>
+        <div class="space-y-1.5">
+          <Label>Sonder-AfA §7g Abs. 5 EStG (%)</Label>
+          <Input
+            type="number"
+            min="0"
+            max="50"
+            step="1"
+            bind:value={editing.sonderabschreibung_prozent}
+          />
+          <p class="text-xs text-[var(--tr-text-dim)]">
+            Einmalig im Erstjahr, zusätzlich zur linearen AfA (max. 50 %).
+          </p>
+        </div>
+
+        <div class="md:col-span-3 border-t border-[var(--tr-line)] pt-4">
+          <div class="mb-2 text-xs uppercase tracking-wide text-[var(--tr-text-dim)]">
+            Anlagenverkauf / Ausscheiden (optional)
+          </div>
+          <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
+            <div class="space-y-1.5">
+              <Label>Verkauft am</Label>
+              <Input
+                type="date"
+                value={editing.verkauft_am ?? ""}
+                oninput={(e) => {
+                  if (editing)
+                    editing.verkauft_am =
+                      (e.currentTarget as HTMLInputElement).value || null;
+                }}
+              />
+            </div>
+            <div class="space-y-1.5">
+              <Label>Verkaufserlös Netto (€)</Label>
+              <Input
+                type="number"
+                step="0.01"
+                value={editing.verkaufserloes_netto ?? ""}
+                oninput={(e) => {
+                  if (editing) {
+                    const v = (e.currentTarget as HTMLInputElement).valueAsNumber;
+                    editing.verkaufserloes_netto = Number.isNaN(v) ? null : v;
+                  }
+                }}
+              />
+            </div>
+            <div class="space-y-1.5">
+              <Label>Verkaufserlös USt (€)</Label>
+              <Input
+                type="number"
+                step="0.01"
+                value={editing.verkaufserloes_ust ?? ""}
+                oninput={(e) => {
+                  if (editing) {
+                    const v = (e.currentTarget as HTMLInputElement).valueAsNumber;
+                    editing.verkaufserloes_ust = Number.isNaN(v) ? null : v;
+                  }
+                }}
+              />
+            </div>
+          </div>
+        </div>
+
         <div class="space-y-1.5 md:col-span-3">
           <Label>Notiz</Label>
           <Input
@@ -226,10 +322,11 @@
           <tr>
             <th class="px-5 py-2 text-left">Anlage</th>
             <th class="px-5 py-2 text-left">Inbetriebnahme</th>
+            <th class="px-5 py-2 text-left">Methode</th>
             <th class="px-5 py-2 text-right">Anschaff. brutto</th>
-            <th class="px-5 py-2 text-right">ND</th>
             <th class="px-5 py-2 text-right">AfA / Jahr</th>
             <th class="px-5 py-2 text-right">Bereits abgeschr.</th>
+            <th class="px-5 py-2 text-right">Restbuchwert</th>
             <th class="px-5 py-2 text-right">EEG bis</th>
             <th class="px-5 py-2 text-right">Rest</th>
             <th class="px-5 py-2"></th>
@@ -237,18 +334,39 @@
         </thead>
         <tbody>
           {#each assets as a (a.id)}
-            {@const basis = a.anschaffung_netto + a.anschaffung_ust}
+            {@const b = a.anschaffung_netto + a.anschaffung_ust}
             <tr
               class="cursor-pointer border-t border-[var(--tr-line)] hover:bg-[var(--tr-surface2)]"
+              class:opacity-60={!!a.verkauft_am}
               onclick={() => (editing = { ...a })}
             >
-              <td class="px-5 py-2 font-medium">{a.name}</td>
+              <td class="px-5 py-2 font-medium">
+                {a.name}
+                {#if a.verkauft_am}
+                  <span class="ml-2 rounded-full bg-[var(--tr-warning-bg)] px-2 py-0.5 text-xs"
+                    style="color: var(--tr-warning);"
+                  >
+                    verkauft {formatDateDE(a.verkauft_am)}
+                  </span>
+                {:else if a.sonderabschreibung_prozent > 0}
+                  <span class="ml-2 rounded-full bg-[var(--tr-green-bg)] px-2 py-0.5 text-xs"
+                    style="color: var(--tr-green-dim);"
+                  >
+                    +{a.sonderabschreibung_prozent}% Sonder-AfA
+                  </span>
+                {/if}
+              </td>
               <td class="px-5 py-2 font-mono">{formatDateDE(a.inbetriebnahme)}</td>
-              <td class="px-5 py-2 text-right font-mono">{formatEUR(basis)}</td>
-              <td class="px-5 py-2 text-right font-mono">{a.nutzungsdauer_jahre} J</td>
+              <td class="px-5 py-2 text-xs text-[var(--tr-text-dim)]">
+                {a.afa_methode === "gwg_sofort" ? "GWG-Sofortabzug" : `Linear ${a.nutzungsdauer_jahre} J`}
+              </td>
+              <td class="px-5 py-2 text-right font-mono">{formatEUR(b)}</td>
               <td class="px-5 py-2 text-right font-mono">{formatEUR(afaProJahr(a))}</td>
               <td class="px-5 py-2 text-right font-mono">
                 {formatEUR(abgeschriebenBis(a, today))}
+              </td>
+              <td class="px-5 py-2 text-right font-mono">
+                {formatEUR(restbuchwert(a, today))}
               </td>
               <td class="px-5 py-2 text-right font-mono text-[var(--tr-text-dim)]">
                 {eegEndeText(a.inbetriebnahme)}

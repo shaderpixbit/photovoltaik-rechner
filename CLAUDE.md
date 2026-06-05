@@ -82,12 +82,30 @@ EÜR (`get_euer`) wertet pro Tag den jeweils gültigen USt-Modus aus und nimmt
 den Betreiber-Status am Jahresende. UStVA (`get_ustva`) verwendet den USt-Modus
 am Periodenende.
 
-### AfA
-`afa_for_year()` in `src-tauri/src/lib.rs`: lineare AfA auf Brutto-
-Anschaffungskosten (netto + USt; im Nullsteuer-Fall steht USt = 0 in `assets`).
-Im Erstjahr pro-rata-temporis nach Monaten ab Inbetriebnahme (Monat der
-Inbetriebnahme zählt voll). Default-Nutzungsdauer 20 Jahre (BMF-AfA-Tabelle für
-PV-Anlagen).
+### AfA und Anlagenverkauf
+`afa_for_year()` + `sonder_afa_for_year()` in `src-tauri/src/lib.rs`:
+AfA-Basis = `anschaffung_netto + anschaffung_ust` (im Nullsteuer-Fall
+USt = 0 in `assets`). Drei Aspekte:
+
+- **Methode** (`assets.afa_methode`): `linear` (default) oder `gwg_sofort`.
+  Linear: AfA = Basis / Nutzungsdauer, im Erstjahr pro-rata-temporis ab
+  Inbetriebnahmemonat (Monat zählt voll), Default-ND 20 Jahre (BMF-AfA-
+  Tabelle für PV). GWG-Sofortabzug §6 Abs. 2 EStG: volle Basis als
+  Aufwand im Inbetriebnahmejahr, danach 0 — relevant für Zubehör netto ≤ 800 €.
+- **Sonder-AfA §7g Abs. 5 EStG** (`assets.sonderabschreibung_prozent`,
+  0–50 %): einmaliger Zusatz-Aufwand im Inbetriebnahmejahr, getrennt im
+  EÜR-Report ausgewiesen (`ausgaben_sonder_afa`).
+- **Verkauf** (`assets.verkauft_am`, `verkaufserloes_netto`,
+  `verkaufserloes_ust`): lineare AfA stoppt im Vormonat des Verkaufs.
+  EÜR-Report enthält `einnahmen_veraeusserung_netto` (Erlös) und
+  `ausgaben_restbuchwert_abgang` (Restbuchwert), Differenz = Veräußerungs-
+  gewinn/-verlust. UStVA addiert `verkaufserloes_ust` zu `ust_einnahmen`.
+
+### Dashboard
+`get_dashboard()` liefert zusätzlich `einsparung_jahr` (Σ Eigenverbrauch
+im Jahr × `strom_bezugspreis`) und `betreiber_modus` (taggenau aktuell).
+Die UI zeigt im Privat-Modus die Ersparnis-Karte statt der Einnahmen-
+Karte; im Gewerbe-Modus stehen beide nebeneinander, sofern Ersparnis > 0.
 
 ### Export & Backup
 Vier Tauri-Commands für lokale Exporte (Datei-Schreiben direkt via

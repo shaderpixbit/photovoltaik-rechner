@@ -15,6 +15,7 @@
     TrophyIcon,
     BanknoteIcon,
     PencilIcon,
+    PiggyBankIcon,
   } from "@lucide/svelte";
 
   let snap = $state<DashboardSnapshot | null>(null);
@@ -254,13 +255,32 @@
           icon={TrophyIcon}
           accent="var(--tr-warning)"
         />
-        <StatTile
-          label="Einnahmen Jahr (netto)"
-          value={formatEUR(snap.einnahmen_jahr)}
-          sub="Bayernwerk-Auszahlungen"
-          icon={BanknoteIcon}
-          accent="var(--tr-green)"
-        />
+        {#if snap.betreiber_modus === "privat"}
+          <StatTile
+            label="Ersparnis Jahr"
+            value={formatEUR(snap.einsparung_jahr)}
+            sub="Eigenverbrauch × Strom-Bezugspreis"
+            icon={PiggyBankIcon}
+            accent="var(--tr-green)"
+          />
+        {:else}
+          <StatTile
+            label="Einnahmen Jahr (netto)"
+            value={formatEUR(snap.einnahmen_jahr)}
+            sub="Bayernwerk-Auszahlungen"
+            icon={BanknoteIcon}
+            accent="var(--tr-green)"
+          />
+          {#if snap.einsparung_jahr > 0}
+            <StatTile
+              label="Ersparnis Jahr"
+              value={formatEUR(snap.einsparung_jahr)}
+              sub="vermiedener Netzbezug (informativ)"
+              icon={PiggyBankIcon}
+              accent="var(--tr-green-dim)"
+            />
+          {/if}
+        {/if}
       </div>
     </div>
 
