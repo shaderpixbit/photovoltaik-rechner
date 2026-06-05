@@ -5,6 +5,7 @@ import type {
   DailyProduction,
   DashboardSnapshot,
   EuerReport,
+  ExpectedEinspeisung,
   Expense,
   Payout,
   Periode,
@@ -141,6 +142,14 @@ export async function getUstva(
 ): Promise<UstvaReport> {
   ensureTauri();
   return await invoke("get_ustva", { jahr, monat });
+}
+
+export async function getExpectedEinspeisung(
+  jahr: number,
+  monat: number | null,
+): Promise<ExpectedEinspeisung> {
+  ensureTauri();
+  return await invoke("get_expected_einspeisung", { jahr, monat });
 }
 
 /* ── Anker / Vendor API (Stub) ───────────────────────────────────────────── */

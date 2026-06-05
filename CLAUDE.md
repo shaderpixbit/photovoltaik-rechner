@@ -41,16 +41,25 @@ Dateien synchron halten, es gibt kein Codegen.
 ### Schema (`src-tauri/src/lib.rs`)
 | Tabelle | Inhalt |
 |---|---|
-| `daily_production` | Tagessumme: `date` (PK), Erzeugung, Eigenverbrauch, Einspeisung, Notiz |
+| `daily_production` | Tagessumme: `date` (PK), Erzeugung, Eigenverbrauch, Einspeisung, optional Netzbezug, Notiz |
 | `payouts` | Bayernwerk-Gutschriften: Buchungsdatum, Zeitraum von/bis, netto, USt, brutto, kWh |
 | `expenses` | Betriebsausgaben mit Kategorie und Vorsteuer-Flag |
 | `assets` | Anlagengüter für AfA: Inbetriebnahme, netto, USt, Nutzungsdauer |
-| `ust_perioden` | Verlauf des USt-Modus (`regel` / `kleinunternehmer` / `nullsteuer`) |
-| `settings` | Key-Value: `ust_satz_regel`, `eigenverbrauch_preis`, `anker_api_url`, `anker_api_token` |
+| `ust_perioden` | Verlauf USt-Modus (`regel` / `kleinunternehmer` / `nullsteuer`) |
+| `betreiber_perioden` | Verlauf Betreiber-Status (`gewerblich` / `privat` = §3 Nr. 72 EStG) |
+| `verguetung_perioden` | Verlauf Einspeisevergütung: `effective_from`, `modell` (`ueberschuss` / `voll` / `direktvermarktung`), `satz_ct_per_kwh` |
+| `settings` | Key-Value: `ust_satz_regel`, `eigenverbrauch_preis`, `strom_bezugspreis`, `anker_api_url`, `anker_api_token` |
 
-### USt-Modus
-Der Modus ist eine **Verlaufstabelle**, kein einzelner Schalter — die App
-wählt für jede Buchung den am Tagesdatum gültigen Eintrag. Drei Modi:
+Schema-Migrationen laufen idempotent in `create_schema()` beim App-Start
+(`CREATE TABLE IF NOT EXISTS …`, additive Spalten via `add_column_if_missing`).
+Es gibt kein separates Migration-Tool.
+
+### Drei orthogonale Verlaufs-Achsen
+Status ist immer eine **Verlaufstabelle**, nicht ein einzelner Schalter — die
+App wählt für jede Buchung den am Tagesdatum gültigen Eintrag. Helper:
+`modus_for` / `betreiber_modus_for` / `verguetung_for` in `lib.rs`.
+
+**USt-Modus** (`ust_perioden`) — wirkt auf UStVA + Vorsteuer:
 - `regel` — 19% USt auf Einspeisung, Eigenverbrauch wird als unentgeltliche
   Wertabgabe besteuert (kWh × Eigenverbrauchspreis × 19%), Vorsteuer abziehbar.
 - `kleinunternehmer` — §19 UStG, keine USt-Berechnung, keine Vorsteuer.
@@ -58,8 +67,20 @@ wählt für jede Buchung den am Tagesdatum gültigen Eintrag. Drei Modi:
   Einspeisung bleibt regelbesteuert. Die Eigenverbrauchsbesteuerung entfällt seit
   dem BMF-Schreiben vom 27.02.2023 — im Code: kein EV-USt-Anteil in der UStVA.
 
-EÜR (`get_euer`) wertet pro Tag den jeweils gültigen Modus aus; UStVA
-(`get_ustva`) verwendet den Modus am Periodenende.
+**Betreiber-Status** (`betreiber_perioden`) — wirkt auf ESt-Pflicht:
+- `gewerblich` — voll EÜR-pflichtig, AfA fließt in die Bemessungsgrundlage.
+- `privat` — §3 Nr. 72 EStG (PV ≤30 kWp bzw. 15 kWp je Wohneinheit,
+  einkommensteuerbefreit). EÜR-Werte werden weiter berechnet, aber
+  `est_pflichtig=false` + `est_befreiungsgrund` setzen — UI zeigt Banner.
+
+**Vergütungssatz** (`verguetung_perioden`) — wirkt auf erwartete
+Einspeisevergütung. `get_expected_einspeisung(jahr, monat?)` summiert
+`Σ einspeisung_kwh × satz_eur` taggenau aus dem Verlauf; ohne hinterlegten
+Satz für einen Tag mit Einspeisung → `tage_ohne_satz` als Hinweis.
+
+EÜR (`get_euer`) wertet pro Tag den jeweils gültigen USt-Modus aus und nimmt
+den Betreiber-Status am Jahresende. UStVA (`get_ustva`) verwendet den USt-Modus
+am Periodenende.
 
 ### AfA
 `afa_for_year()` in `src-tauri/src/lib.rs`: lineare AfA auf Brutto-

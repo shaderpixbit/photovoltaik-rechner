@@ -62,6 +62,28 @@
   {:else if !report}
     <div class="text-sm text-[var(--tr-text-dim)]">Lädt…</div>
   {:else}
+    {#if !report.est_pflichtig}
+      <Card>
+        <div
+          class="flex items-start gap-3 p-5"
+          style="background: var(--tr-yellow-bg, #fef3c7); color: var(--tr-text);"
+        >
+          <div class="text-2xl leading-none">i</div>
+          <div class="space-y-1 text-sm">
+            <div class="font-semibold">Einkommensteuer-befreit ({jahr})</div>
+            <div class="text-[var(--tr-text-dim)]">
+              {report.est_befreiungsgrund ??
+                "Betreiber-Status „privat“ am Jahresende — keine EÜR-Pflicht."}
+            </div>
+            <div class="text-xs text-[var(--tr-text-dim)]">
+              Die Werte unten sind nur informativ und fließen nicht in die
+              Einkommensteuer-Erklärung. Die UStVA bleibt davon unberührt.
+            </div>
+          </div>
+        </div>
+      </Card>
+    {/if}
+
     <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
       <Card>
         <CardHeader title="Einnahmen" />

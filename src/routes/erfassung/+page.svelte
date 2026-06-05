@@ -222,6 +222,7 @@
           erzeugung_kwh: mode === "tag" ? totalErz : perErz,
           eigenverbrauch_kwh: mode === "tag" ? totalEv : perEv,
           einspeisung_kwh: mode === "tag" ? totalEi : perEi,
+          netzbezug_kwh: null,
           notiz: note,
         };
         await upsertDaily(entry);

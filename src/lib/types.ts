@@ -6,6 +6,8 @@ export interface DailyProduction {
   erzeugung_kwh: number;
   eigenverbrauch_kwh: number;
   einspeisung_kwh: number;
+  /** Netzbezug (kWh aus dem Netz), optional — für Autarkiegrad / Privat-Ersparnis */
+  netzbezug_kwh: number | null;
   notiz: string | null;
 }
 
@@ -67,10 +69,46 @@ export interface UstPeriode {
   modus: UstModus;
 }
 
+/**
+ * Betreiber-Modus für die Einkommensteuer-Seite:
+ * - `gewerblich` — voll EÜR-pflichtig.
+ * - `privat` — PV-Anlage ≤30 kWp (bzw. 15 kWp je Wohneinheit) ist seit 2023
+ *   einkommensteuerbefreit nach §3 Nr. 72 EStG. EÜR-Werte werden nur informativ
+ *   ausgewiesen. Die UStVA-Seite bleibt davon unberührt — das ist eine andere
+ *   Achse (siehe `UstModus`).
+ */
+export type BetreiberModus = "gewerblich" | "privat";
+
+export interface BetreiberPeriode {
+  id: number;
+  effective_from: string;
+  modus: BetreiberModus;
+}
+
+/**
+ * Einspeisemodell und Vergütungssatz (Cent/kWh). Modell:
+ * - `ueberschuss` — Überschusseinspeisung (Standardfall bei Eigenverbrauch).
+ * - `voll` — Volleinspeisung.
+ * - `direktvermarktung` — Vermarktung über Direktvermarkter (variabler Satz,
+ *   hier als Schnitt-/Anzahlungssatz erfasst).
+ */
+export type EinspeiseModell = "ueberschuss" | "voll" | "direktvermarktung";
+
+export interface VerguetungPeriode {
+  id: number;
+  effective_from: string;
+  modell: EinspeiseModell;
+  satz_ct_per_kwh: number;
+}
+
 export interface Settings {
   ust_perioden: UstPeriode[];
+  betreiber_perioden: BetreiberPeriode[];
+  verguetung_perioden: VerguetungPeriode[];
   ust_satz_regel: number;
   eigenverbrauch_preis: number;
+  /** Strom-Bezugspreis (€/kWh) für Ersparnis-Berechnung im Privatmodus. */
+  strom_bezugspreis: number;
   anker_api_url: string | null;
   anker_api_token: string | null;
 }
@@ -98,6 +136,18 @@ export interface EuerReport {
   ausgaben_afa: number;
   vorsteuer: number;
   gewinn_vor_steuern: number;
+  betreiber_modus: BetreiberModus;
+  est_pflichtig: boolean;
+  est_befreiungsgrund: string | null;
+}
+
+export interface ExpectedEinspeisung {
+  jahr: number;
+  monat: number | null;
+  kwh: number;
+  erwartet_netto: number;
+  /** Tage im Zeitraum mit Einspeisung, aber ohne hinterlegten Vergütungssatz. */
+  tage_ohne_satz: number;
 }
 
 export interface UstvaReport {

@@ -18,6 +18,8 @@ pub struct DailyProduction {
     pub eigenverbrauch_kwh: f64,
     pub einspeisung_kwh: f64,
     #[serde(default)]
+    pub netzbezug_kwh: Option<f64>,
+    #[serde(default)]
     pub notiz: Option<String>,
 }
 
@@ -69,10 +71,30 @@ pub struct UstPeriode {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct BetreiberPeriode {
+    pub id: i64,
+    pub effective_from: String,
+    /// "gewerblich" | "privat"
+    pub modus: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct VerguetungPeriode {
+    pub id: i64,
+    pub effective_from: String,
+    /// "ueberschuss" | "voll" | "direktvermarktung"
+    pub modell: String,
+    pub satz_ct_per_kwh: f64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Settings {
     pub ust_perioden: Vec<UstPeriode>,
+    pub betreiber_perioden: Vec<BetreiberPeriode>,
+    pub verguetung_perioden: Vec<VerguetungPeriode>,
     pub ust_satz_regel: f64,
     pub eigenverbrauch_preis: f64,
+    pub strom_bezugspreis: f64,
     #[serde(default)]
     pub anker_api_url: Option<String>,
     #[serde(default)]
@@ -99,6 +121,19 @@ pub struct EuerReport {
     pub ausgaben_afa: f64,
     pub vorsteuer: f64,
     pub gewinn_vor_steuern: f64,
+    pub betreiber_modus: String,
+    pub est_pflichtig: bool,
+    pub est_befreiungsgrund: Option<String>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct ExpectedEinspeisung {
+    pub jahr: i32,
+    pub monat: Option<i32>,
+    pub kwh: f64,
+    pub erwartet_netto: f64,
+    /// Tage im Zeitraum, für die kein Vergütungssatz hinterlegt war.
+    pub tage_ohne_satz: i64,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -200,11 +235,45 @@ fn create_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
             modus           TEXT NOT NULL
          );
 
+         CREATE TABLE IF NOT EXISTS betreiber_perioden (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            effective_from  TEXT NOT NULL,
+            modus           TEXT NOT NULL
+         );
+
+         CREATE TABLE IF NOT EXISTS verguetung_perioden (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            effective_from      TEXT NOT NULL,
+            modell              TEXT NOT NULL,
+            satz_ct_per_kwh     REAL NOT NULL DEFAULT 0
+         );
+
          CREATE TABLE IF NOT EXISTS settings (
             key   TEXT PRIMARY KEY,
             value TEXT NOT NULL
          );",
     )?;
+    add_column_if_missing(conn, "daily_production", "netzbezug_kwh", "REAL")?;
+    Ok(())
+}
+
+fn add_column_if_missing(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    decl: &str,
+) -> Result<(), rusqlite::Error> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", table))?;
+    let exists = stmt
+        .query_map([], |r| r.get::<_, String>(1))?
+        .filter_map(|r| r.ok())
+        .any(|name| name == column);
+    if !exists {
+        conn.execute(
+            &format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, decl),
+            [],
+        )?;
+    }
     Ok(())
 }
 
@@ -225,10 +294,23 @@ fn seed_defaults(conn: &Connection) -> Result<(), rusqlite::Error> {
         "INSERT OR IGNORE INTO settings (key, value) VALUES ('anker_api_token', '')",
         [],
     )?;
+    conn.execute(
+        "INSERT OR IGNORE INTO settings (key, value) VALUES ('strom_bezugspreis', '0.35')",
+        [],
+    )?;
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM ust_perioden", [], |r| r.get(0))?;
     if count == 0 {
         conn.execute(
             "INSERT INTO ust_perioden (effective_from, modus) VALUES ('2000-01-01', 'regel')",
+            [],
+        )?;
+    }
+    let count: i64 =
+        conn.query_row("SELECT COUNT(*) FROM betreiber_perioden", [], |r| r.get(0))?;
+    if count == 0 {
+        conn.execute(
+            "INSERT INTO betreiber_perioden (effective_from, modus)
+             VALUES ('2000-01-01', 'gewerblich')",
             [],
         )?;
     }
@@ -280,12 +362,70 @@ fn load_perioden(conn: &Connection) -> Result<Vec<UstPeriode>, rusqlite::Error> 
     Ok(rows)
 }
 
+fn load_betreiber_perioden(conn: &Connection) -> Result<Vec<BetreiberPeriode>, rusqlite::Error> {
+    let mut stmt = conn.prepare(
+        "SELECT id, effective_from, modus FROM betreiber_perioden ORDER BY effective_from ASC",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(BetreiberPeriode {
+                id: r.get(0)?,
+                effective_from: r.get(1)?,
+                modus: r.get(2)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(rows)
+}
+
+fn load_verguetung_perioden(conn: &Connection) -> Result<Vec<VerguetungPeriode>, rusqlite::Error> {
+    let mut stmt = conn.prepare(
+        "SELECT id, effective_from, modell, satz_ct_per_kwh FROM verguetung_perioden
+         ORDER BY effective_from ASC",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(VerguetungPeriode {
+                id: r.get(0)?,
+                effective_from: r.get(1)?,
+                modell: r.get(2)?,
+                satz_ct_per_kwh: r.get(3)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(rows)
+}
+
 /// Picks the modus active on `date` (the latest period whose effective_from ≤ date).
 fn modus_for(perioden: &[UstPeriode], date: &str) -> String {
     let mut chosen = "regel".to_string();
     for p in perioden {
         if p.effective_from.as_str() <= date {
             chosen = p.modus.clone();
+        }
+    }
+    chosen
+}
+
+fn betreiber_modus_for(perioden: &[BetreiberPeriode], date: &str) -> String {
+    let mut chosen = "gewerblich".to_string();
+    for p in perioden {
+        if p.effective_from.as_str() <= date {
+            chosen = p.modus.clone();
+        }
+    }
+    chosen
+}
+
+/// Returns the vergütungs-satz (€/kWh) and modell active on `date`, or None if
+/// no period covers it (e.g. before the first effective_from).
+fn verguetung_for(perioden: &[VerguetungPeriode], date: &str) -> Option<(f64, String)> {
+    let mut chosen: Option<(f64, String)> = None;
+    for p in perioden {
+        if p.effective_from.as_str() <= date {
+            chosen = Some((p.satz_ct_per_kwh / 100.0, p.modell.clone()));
         }
     }
     chosen
@@ -302,7 +442,7 @@ fn list_daily_range(
     let db = state.0.lock().map_err(|e| e.to_string())?;
     let mut stmt = db
         .prepare(
-            "SELECT date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, notiz
+            "SELECT date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh, notiz
              FROM daily_production
              WHERE date BETWEEN ?1 AND ?2
              ORDER BY date ASC",
@@ -315,7 +455,8 @@ fn list_daily_range(
                 erzeugung_kwh: r.get(1)?,
                 eigenverbrauch_kwh: r.get(2)?,
                 einspeisung_kwh: r.get(3)?,
-                notiz: r.get(4)?,
+                netzbezug_kwh: r.get(4)?,
+                notiz: r.get(5)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -328,7 +469,7 @@ fn list_daily_range(
 fn get_daily(state: State<DbState>, date: String) -> Result<Option<DailyProduction>, String> {
     let db = state.0.lock().map_err(|e| e.to_string())?;
     db.query_row(
-        "SELECT date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, notiz
+        "SELECT date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh, notiz
          FROM daily_production WHERE date = ?1",
         params![date],
         |r| {
@@ -337,7 +478,8 @@ fn get_daily(state: State<DbState>, date: String) -> Result<Option<DailyProducti
                 erzeugung_kwh: r.get(1)?,
                 eigenverbrauch_kwh: r.get(2)?,
                 einspeisung_kwh: r.get(3)?,
-                notiz: r.get(4)?,
+                netzbezug_kwh: r.get(4)?,
+                notiz: r.get(5)?,
             })
         },
     )
@@ -350,18 +492,20 @@ fn upsert_daily(state: State<DbState>, entry: DailyProduction) -> Result<(), Str
     let db = state.0.lock().map_err(|e| e.to_string())?;
     db.execute(
         "INSERT INTO daily_production
-         (date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, notiz)
-         VALUES (?1, ?2, ?3, ?4, ?5)
+         (date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh, notiz)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          ON CONFLICT(date) DO UPDATE SET
             erzeugung_kwh = excluded.erzeugung_kwh,
             eigenverbrauch_kwh = excluded.eigenverbrauch_kwh,
             einspeisung_kwh = excluded.einspeisung_kwh,
+            netzbezug_kwh = excluded.netzbezug_kwh,
             notiz = excluded.notiz",
         params![
             entry.date,
             entry.erzeugung_kwh,
             entry.eigenverbrauch_kwh,
             entry.einspeisung_kwh,
+            entry.netzbezug_kwh,
             entry.notiz
         ],
     )
@@ -626,7 +770,9 @@ fn delete_asset(state: State<DbState>, id: i64) -> Result<(), String> {
 #[command]
 fn get_settings(state: State<DbState>) -> Result<Settings, String> {
     let db = state.0.lock().map_err(|e| e.to_string())?;
-    let perioden = load_perioden(&db).map_err(|e| e.to_string())?;
+    let ust_perioden = load_perioden(&db).map_err(|e| e.to_string())?;
+    let betreiber_perioden = load_betreiber_perioden(&db).map_err(|e| e.to_string())?;
+    let verguetung_perioden = load_verguetung_perioden(&db).map_err(|e| e.to_string())?;
     let url = get_setting(&db, "anker_api_url")
         .map_err(|e| e.to_string())?
         .filter(|s| !s.is_empty());
@@ -634,9 +780,12 @@ fn get_settings(state: State<DbState>) -> Result<Settings, String> {
         .map_err(|e| e.to_string())?
         .filter(|s| !s.is_empty());
     Ok(Settings {
-        ust_perioden: perioden,
+        ust_perioden,
+        betreiber_perioden,
+        verguetung_perioden,
         ust_satz_regel: get_setting_f64(&db, "ust_satz_regel", 0.19),
         eigenverbrauch_preis: get_setting_f64(&db, "eigenverbrauch_preis", 0.20),
+        strom_bezugspreis: get_setting_f64(&db, "strom_bezugspreis", 0.35),
         anker_api_url: url,
         anker_api_token: token,
     })
@@ -651,6 +800,12 @@ fn set_settings(state: State<DbState>, settings: Settings) -> Result<(), String>
         &db,
         "eigenverbrauch_preis",
         &settings.eigenverbrauch_preis.to_string(),
+    )
+    .map_err(|e| e.to_string())?;
+    set_setting(
+        &db,
+        "strom_bezugspreis",
+        &settings.strom_bezugspreis.to_string(),
     )
     .map_err(|e| e.to_string())?;
     set_setting(
@@ -679,6 +834,35 @@ fn set_settings(state: State<DbState>, settings: Settings) -> Result<(), String>
         db.execute(
             "INSERT INTO ust_perioden (effective_from, modus) VALUES ('2000-01-01', 'regel')",
             [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    db.execute("DELETE FROM betreiber_perioden", [])
+        .map_err(|e| e.to_string())?;
+    for p in &settings.betreiber_perioden {
+        db.execute(
+            "INSERT INTO betreiber_perioden (effective_from, modus) VALUES (?1, ?2)",
+            params![p.effective_from, p.modus],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    if settings.betreiber_perioden.is_empty() {
+        db.execute(
+            "INSERT INTO betreiber_perioden (effective_from, modus)
+             VALUES ('2000-01-01', 'gewerblich')",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+
+    db.execute("DELETE FROM verguetung_perioden", [])
+        .map_err(|e| e.to_string())?;
+    for p in &settings.verguetung_perioden {
+        db.execute(
+            "INSERT INTO verguetung_perioden (effective_from, modell, satz_ct_per_kwh)
+             VALUES (?1, ?2, ?3)",
+            params![p.effective_from, p.modell, p.satz_ct_per_kwh],
         )
         .map_err(|e| e.to_string())?;
     }
@@ -762,7 +946,7 @@ fn get_dashboard(state: State<DbState>) -> Result<DashboardSnapshot, String> {
 
     let heute = db
         .query_row(
-            "SELECT date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, notiz
+            "SELECT date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh, notiz
              FROM daily_production WHERE date = ?1",
             params![today_iso],
             |r| {
@@ -771,7 +955,8 @@ fn get_dashboard(state: State<DbState>) -> Result<DashboardSnapshot, String> {
                     erzeugung_kwh: r.get(1)?,
                     eigenverbrauch_kwh: r.get(2)?,
                     einspeisung_kwh: r.get(3)?,
-                    notiz: r.get(4)?,
+                    netzbezug_kwh: r.get(4)?,
+                    notiz: r.get(5)?,
                 })
             },
         )
@@ -793,7 +978,7 @@ fn get_dashboard(state: State<DbState>) -> Result<DashboardSnapshot, String> {
 
     let max_tag = db
         .query_row(
-            "SELECT date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, notiz
+            "SELECT date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh, notiz
              FROM daily_production
              ORDER BY erzeugung_kwh DESC LIMIT 1",
             [],
@@ -803,7 +988,8 @@ fn get_dashboard(state: State<DbState>) -> Result<DashboardSnapshot, String> {
                     erzeugung_kwh: r.get(1)?,
                     eigenverbrauch_kwh: r.get(2)?,
                     einspeisung_kwh: r.get(3)?,
-                    notiz: r.get(4)?,
+                    netzbezug_kwh: r.get(4)?,
+                    notiz: r.get(5)?,
                 })
             },
         )
@@ -856,6 +1042,7 @@ fn afa_for_year(asset: &Asset, jahr: i32) -> f64 {
 fn get_euer(state: State<DbState>, jahr: i32) -> Result<EuerReport, String> {
     let db = state.0.lock().map_err(|e| e.to_string())?;
     let perioden = load_perioden(&db).map_err(|e| e.to_string())?;
+    let betreiber_perioden = load_betreiber_perioden(&db).map_err(|e| e.to_string())?;
     let ust_satz = get_setting_f64(&db, "ust_satz_regel", 0.19);
     let ev_preis = get_setting_f64(&db, "eigenverbrauch_preis", 0.20);
 
@@ -932,6 +1119,21 @@ fn get_euer(state: State<DbState>, jahr: i32) -> Result<EuerReport, String> {
     let ausgaben = ausgaben_betrieb_netto + ausgaben_afa;
     let gewinn = einnahmen - ausgaben;
 
+    let betreiber_modus = betreiber_modus_for(&betreiber_perioden, &jahr_end);
+    let (est_pflichtig, est_befreiungsgrund) = if betreiber_modus == "privat" {
+        (
+            false,
+            Some(
+                "Privatbetrieb — Einkommensteuer-Befreiung nach §3 Nr. 72 EStG \
+                 (PV-Anlage bis 30 kWp / 15 kWp je Wohneinheit). Werte werden \
+                 informativ ausgewiesen, fließen aber nicht in die ESt-Erklärung."
+                    .to_string(),
+            ),
+        )
+    } else {
+        (true, None)
+    };
+
     Ok(EuerReport {
         jahr,
         einnahmen_einspeisung_netto,
@@ -942,6 +1144,9 @@ fn get_euer(state: State<DbState>, jahr: i32) -> Result<EuerReport, String> {
         ausgaben_afa,
         vorsteuer,
         gewinn_vor_steuern: gewinn,
+        betreiber_modus,
+        est_pflichtig,
+        est_befreiungsgrund,
     })
 }
 
@@ -1057,6 +1262,72 @@ fn get_ustva(
     })
 }
 
+// ── Erwartete Einspeisevergütung ────────────────────────────────────────────
+
+#[command]
+fn get_expected_einspeisung(
+    state: State<DbState>,
+    jahr: i32,
+    monat: Option<i32>,
+) -> Result<ExpectedEinspeisung, String> {
+    let db = state.0.lock().map_err(|e| e.to_string())?;
+    let verguetung_perioden = load_verguetung_perioden(&db).map_err(|e| e.to_string())?;
+
+    let (from, to) = match monat {
+        Some(m) => {
+            let start = NaiveDate::from_ymd_opt(jahr, m as u32, 1)
+                .ok_or_else(|| format!("Ungültiger Monat: {}/{}", m, jahr))?;
+            let next = if m == 12 {
+                NaiveDate::from_ymd_opt(jahr + 1, 1, 1).unwrap()
+            } else {
+                NaiveDate::from_ymd_opt(jahr, (m + 1) as u32, 1).unwrap()
+            };
+            let end = next - chrono::Duration::days(1);
+            (
+                start.format("%Y-%m-%d").to_string(),
+                end.format("%Y-%m-%d").to_string(),
+            )
+        }
+        None => (format!("{:04}-01-01", jahr), format!("{:04}-12-31", jahr)),
+    };
+
+    let mut stmt = db
+        .prepare(
+            "SELECT date, einspeisung_kwh FROM daily_production
+             WHERE date BETWEEN ?1 AND ?2",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![from, to], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?))
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut kwh_sum = 0.0;
+    let mut erwartet_netto = 0.0;
+    let mut tage_ohne_satz: i64 = 0;
+    for row in rows.flatten() {
+        let (date, kwh) = row;
+        kwh_sum += kwh;
+        match verguetung_for(&verguetung_perioden, &date) {
+            Some((satz_eur, _modell)) => erwartet_netto += kwh * satz_eur,
+            None => {
+                if kwh > 0.0 {
+                    tage_ohne_satz += 1;
+                }
+            }
+        }
+    }
+
+    Ok(ExpectedEinspeisung {
+        jahr,
+        monat,
+        kwh: kwh_sum,
+        erwartet_netto,
+        tage_ohne_satz,
+    })
+}
+
 // ── Vendor-API Import (Stub) ────────────────────────────────────────────────
 
 #[derive(Serialize)]
@@ -1120,6 +1391,7 @@ pub fn run() {
             get_dashboard,
             get_euer,
             get_ustva,
+            get_expected_einspeisung,
             import_from_vendor,
         ])
         .run(tauri::generate_context!())
