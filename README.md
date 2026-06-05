@@ -12,6 +12,8 @@ payouts (Bayernwerk), operating expenses and capital assets, and produces the
 German income statement (EÜR) and VAT advance return (UStVA) from the
 collected data.*
 
+![Dashboard — Übersicht über Tages-, Monats- und Jahreserzeugung mit Eigenverbrauch und Einspeisung](docs/screenshot-dashboard.png)
+
 ---
 
 ## Deutsch
