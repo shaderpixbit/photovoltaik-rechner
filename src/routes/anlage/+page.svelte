@@ -15,6 +15,7 @@
   import Input from "$lib/components/ui/Input.svelte";
   import Label from "$lib/components/ui/Label.svelte";
   import Select from "$lib/components/ui/Select.svelte";
+  import DateField from "$lib/components/ui/DateField.svelte";
   import {
     DownloadIcon,
     PlusIcon,
@@ -200,7 +201,7 @@
         </div>
         <div class="space-y-1.5">
           <Label>Inbetriebnahme</Label>
-          <Input type="date" bind:value={editing.inbetriebnahme} />
+          <DateField bind:value={editing.inbetriebnahme} />
         </div>
         <div class="space-y-1.5">
           <Label>Anschaffung Netto (€)</Label>
@@ -242,13 +243,10 @@
           <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
             <div class="space-y-1.5">
               <Label>Verkauft am</Label>
-              <Input
-                type="date"
+              <DateField
                 value={editing.verkauft_am ?? ""}
-                oninput={(e) => {
-                  if (editing)
-                    editing.verkauft_am =
-                      (e.currentTarget as HTMLInputElement).value || null;
+                onchange={(v) => {
+                  if (editing) editing.verkauft_am = v || null;
                 }}
               />
             </div>

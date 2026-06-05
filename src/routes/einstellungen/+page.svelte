@@ -27,6 +27,7 @@
   import Input from "$lib/components/ui/Input.svelte";
   import Label from "$lib/components/ui/Label.svelte";
   import Select from "$lib/components/ui/Select.svelte";
+  import DateField from "$lib/components/ui/DateField.svelte";
   import {
     DatabaseIcon,
     DownloadIcon,
@@ -245,7 +246,7 @@
           <div class="grid grid-cols-1 items-end gap-3 px-5 py-3 md:grid-cols-3">
             <div class="space-y-1.5">
               <Label>Gültig ab</Label>
-              <Input type="date" bind:value={p.effective_from} />
+              <DateField bind:value={p.effective_from} />
             </div>
             <div class="space-y-1.5">
               <Label>Status</Label>
@@ -282,7 +283,7 @@
           <div class="grid grid-cols-1 items-end gap-3 px-5 py-3 md:grid-cols-3">
             <div class="space-y-1.5">
               <Label>Gültig ab</Label>
-              <Input type="date" bind:value={p.effective_from} />
+              <DateField bind:value={p.effective_from} />
             </div>
             <div class="space-y-1.5">
               <Label>Modus</Label>
@@ -316,7 +317,7 @@
           <div class="grid grid-cols-1 items-end gap-3 px-5 py-3 md:grid-cols-4">
             <div class="space-y-1.5">
               <Label>Gültig ab</Label>
-              <Input type="date" bind:value={p.effective_from} />
+              <DateField bind:value={p.effective_from} />
             </div>
             <div class="space-y-1.5">
               <Label>Modell</Label>

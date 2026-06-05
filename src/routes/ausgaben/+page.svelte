@@ -9,6 +9,7 @@
   import Input from "$lib/components/ui/Input.svelte";
   import Label from "$lib/components/ui/Label.svelte";
   import Select from "$lib/components/ui/Select.svelte";
+  import DateField from "$lib/components/ui/DateField.svelte";
   import { PlusIcon, SaveIcon, Trash2Icon, XIcon } from "@lucide/svelte";
 
   const KATEGORIEN: ExpenseKategorie[] = [
@@ -93,7 +94,7 @@
       <div class="grid grid-cols-1 gap-4 px-5 py-5 md:grid-cols-4">
         <div class="space-y-1.5">
           <Label>Datum</Label>
-          <Input type="date" bind:value={editing.date} />
+          <DateField bind:value={editing.date} />
         </div>
         <div class="space-y-1.5">
           <Label>Kategorie</Label>

@@ -14,6 +14,7 @@
   import Button from "$lib/components/ui/Button.svelte";
   import Input from "$lib/components/ui/Input.svelte";
   import Label from "$lib/components/ui/Label.svelte";
+  import DateField from "$lib/components/ui/DateField.svelte";
   import { CloudDownloadIcon, SaveIcon, Trash2Icon } from "@lucide/svelte";
 
   type Mode = "tag" | "monat" | "jahr";
@@ -332,7 +333,7 @@
       <div class="space-y-1.5">
         {#if mode === "tag"}
           <Label for="date">Datum</Label>
-          <Input id="date" type="date" bind:value={dateValue} />
+          <DateField id="date" bind:value={dateValue} />
         {:else if mode === "monat"}
           <Label for="month">Monat</Label>
           <Input id="month" type="month" bind:value={monthValue} />

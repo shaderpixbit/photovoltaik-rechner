@@ -14,6 +14,7 @@
   import Input from "$lib/components/ui/Input.svelte";
   import Label from "$lib/components/ui/Label.svelte";
   import Select from "$lib/components/ui/Select.svelte";
+  import DateField from "$lib/components/ui/DateField.svelte";
   import { PlusIcon, SaveIcon, Trash2Icon, XIcon } from "@lucide/svelte";
 
   let payouts = $state<Payout[]>([]);
@@ -210,15 +211,15 @@
       <div class="grid grid-cols-1 gap-4 px-5 py-5 md:grid-cols-4">
         <div class="space-y-1.5">
           <Label>Buchungsdatum</Label>
-          <Input type="date" bind:value={editing.buchung_date} />
+          <DateField bind:value={editing.buchung_date} />
         </div>
         <div class="space-y-1.5">
           <Label>Zeitraum von</Label>
-          <Input type="date" bind:value={editing.zeitraum_von} />
+          <DateField bind:value={editing.zeitraum_von} />
         </div>
         <div class="space-y-1.5">
           <Label>Zeitraum bis</Label>
-          <Input type="date" bind:value={editing.zeitraum_bis} />
+          <DateField bind:value={editing.zeitraum_bis} />
         </div>
         <div class="space-y-1.5">
           <Label>kWh (laut Abrechnung)</Label>
