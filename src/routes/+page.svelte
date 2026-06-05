@@ -44,11 +44,29 @@
     }
   });
 
-  let autarkie = $derived(
+  let evQuoteHeute = $derived(
     snap?.heute && snap.heute.erzeugung_kwh > 0
       ? snap.heute.eigenverbrauch_kwh / snap.heute.erzeugung_kwh
       : null,
   );
+
+  /** Autarkiegrad = Eigenverbrauch / Gesamtverbrauch (EV + Netzbezug). */
+  let autarkieHeute = $derived.by(() => {
+    const h = snap?.heute;
+    if (!h || h.netzbezug_kwh == null) return null;
+    const gesamt = h.eigenverbrauch_kwh + h.netzbezug_kwh;
+    return gesamt > 0 ? h.eigenverbrauch_kwh / gesamt : null;
+  });
+
+  let autarkieJahr = $derived.by(() => {
+    const rows = last30;
+    const withNetz = rows.filter((r) => r.netzbezug_kwh != null);
+    if (withNetz.length === 0) return null;
+    const ev = withNetz.reduce((s, r) => s + r.eigenverbrauch_kwh, 0);
+    const nb = withNetz.reduce((s, r) => s + (r.netzbezug_kwh ?? 0), 0);
+    const gesamt = ev + nb;
+    return gesamt > 0 ? ev / gesamt : null;
+  });
 
   let last30Series = $derived.by(() => {
     const map = new Map(last30.map((r) => [r.date, r]));
@@ -190,14 +208,40 @@
             </div>
           </div>
         </div>
-        {#if autarkie !== null}
+        {#if evQuoteHeute !== null || autarkieHeute !== null || autarkieJahr !== null}
           <div
-            class="border-t border-[var(--tr-line)] px-5 py-3 text-xs text-[var(--tr-text-dim)]"
+            class="flex flex-wrap gap-x-6 gap-y-1 border-t border-[var(--tr-line)] px-5 py-3 text-xs text-[var(--tr-text-dim)]"
           >
-            Eigenverbrauchsquote heute:
-            <span class="font-mono font-medium text-[var(--tr-text)]">
-              {(autarkie * 100).toLocaleString("de-DE", { maximumFractionDigits: 1 })}%
-            </span>
+            {#if evQuoteHeute !== null}
+              <div>
+                Eigenverbrauchsquote heute:
+                <span class="font-mono font-medium text-[var(--tr-text)]">
+                  {(evQuoteHeute * 100).toLocaleString("de-DE", {
+                    maximumFractionDigits: 1,
+                  })}%
+                </span>
+              </div>
+            {/if}
+            {#if autarkieHeute !== null}
+              <div>
+                Autarkiegrad heute:
+                <span class="font-mono font-medium text-[var(--tr-text)]">
+                  {(autarkieHeute * 100).toLocaleString("de-DE", {
+                    maximumFractionDigits: 1,
+                  })}%
+                </span>
+              </div>
+            {/if}
+            {#if autarkieJahr !== null}
+              <div>
+                Autarkiegrad 30 Tage:
+                <span class="font-mono font-medium text-[var(--tr-text)]">
+                  {(autarkieJahr * 100).toLocaleString("de-DE", {
+                    maximumFractionDigits: 1,
+                  })}%
+                </span>
+              </div>
+            {/if}
           </div>
         {/if}
       </Card>

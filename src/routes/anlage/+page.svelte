@@ -70,6 +70,37 @@
     return Math.min(wert, basis);
   }
 
+  /**
+   * EEG-Förderzeitraum endet am 31.12. des 20. Folgejahres nach Inbetriebnahme.
+   * Beispiel: Inbetriebnahme 2024-06-01 → Förderung bis 2044-12-31.
+   */
+  function eegEnde(inbetriebnahme: string): Date | null {
+    const start = new Date(inbetriebnahme);
+    if (Number.isNaN(start.getTime())) return null;
+    return new Date(start.getFullYear() + 20, 11, 31);
+  }
+
+  function eegRestText(inbetriebnahme: string, heute: string): string {
+    const ende = eegEnde(inbetriebnahme);
+    if (!ende) return "—";
+    const now = new Date(heute);
+    if (now > ende) return "abgelaufen";
+    const totalMonths =
+      (ende.getFullYear() - now.getFullYear()) * 12 +
+      (ende.getMonth() - now.getMonth());
+    const jahre = Math.floor(totalMonths / 12);
+    const monate = totalMonths % 12;
+    if (jahre <= 0) return `${monate} Mon.`;
+    if (monate === 0) return `${jahre} J.`;
+    return `${jahre} J. ${monate} Mon.`;
+  }
+
+  function eegEndeText(inbetriebnahme: string): string {
+    const ende = eegEnde(inbetriebnahme);
+    if (!ende) return "—";
+    return ende.toLocaleDateString("de-DE", { month: "2-digit", year: "numeric" });
+  }
+
   const today = todayISO();
 </script>
 
@@ -157,6 +188,8 @@
             <th class="px-5 py-2 text-right">ND</th>
             <th class="px-5 py-2 text-right">AfA / Jahr</th>
             <th class="px-5 py-2 text-right">Bereits abgeschr.</th>
+            <th class="px-5 py-2 text-right">EEG bis</th>
+            <th class="px-5 py-2 text-right">Rest</th>
             <th class="px-5 py-2"></th>
           </tr>
         </thead>
@@ -174,6 +207,12 @@
               <td class="px-5 py-2 text-right font-mono">{formatEUR(afaProJahr(a))}</td>
               <td class="px-5 py-2 text-right font-mono">
                 {formatEUR(abgeschriebenBis(a, today))}
+              </td>
+              <td class="px-5 py-2 text-right font-mono text-[var(--tr-text-dim)]">
+                {eegEndeText(a.inbetriebnahme)}
+              </td>
+              <td class="px-5 py-2 text-right font-mono text-[var(--tr-text-dim)]">
+                {eegRestText(a.inbetriebnahme, today)}
               </td>
               <td class="px-5 py-2 text-right">
                 <button

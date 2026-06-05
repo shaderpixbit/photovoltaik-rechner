@@ -1,18 +1,30 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { deletePayout, listPayouts, upsertPayout } from "$lib/api";
-  import type { Payout } from "$lib/types";
+  import {
+    deletePayout,
+    getExpectedEinspeisung,
+    listPayouts,
+    upsertPayout,
+  } from "$lib/api";
+  import type { ExpectedEinspeisung, Payout } from "$lib/types";
   import { formatDateDE, formatEUR, todayISO } from "$lib/utils";
   import Card from "$lib/components/ui/Card.svelte";
   import CardHeader from "$lib/components/ui/CardHeader.svelte";
   import Button from "$lib/components/ui/Button.svelte";
   import Input from "$lib/components/ui/Input.svelte";
   import Label from "$lib/components/ui/Label.svelte";
+  import Select from "$lib/components/ui/Select.svelte";
   import { PlusIcon, SaveIcon, Trash2Icon, XIcon } from "@lucide/svelte";
 
   let payouts = $state<Payout[]>([]);
   let editing = $state<Payout | null>(null);
   let error = $state<string | null>(null);
+
+  const currentYear = new Date().getFullYear();
+  let jahrSel = $state(String(currentYear));
+  let jahr = $derived(Number(jahrSel));
+  const jahre = Array.from({ length: 10 }, (_, i) => currentYear - i);
+  let expected = $state<ExpectedEinspeisung | null>(null);
 
   function leer(): Payout {
     return {
@@ -36,7 +48,24 @@
     }
   }
 
-  onMount(reload);
+  async function reloadExpected() {
+    try {
+      expected = await getExpectedEinspeisung(jahr, null);
+    } catch (e) {
+      expected = null;
+      error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  onMount(async () => {
+    await reload();
+    await reloadExpected();
+  });
+
+  $effect(() => {
+    jahrSel;
+    reloadExpected();
+  });
 
   async function save() {
     if (!editing) return;
@@ -65,6 +94,18 @@
 
   let summeNetto = $derived(payouts.reduce((s, p) => s + p.netto, 0));
   let summeBrutto = $derived(payouts.reduce((s, p) => s + p.brutto, 0));
+
+  let payoutsJahr = $derived(
+    payouts.filter((p) => p.buchung_date.startsWith(String(jahr))),
+  );
+  let istNetto = $derived(payoutsJahr.reduce((s, p) => s + p.netto, 0));
+  let istKwh = $derived(payoutsJahr.reduce((s, p) => s + (p.kwh ?? 0), 0));
+  let diffNetto = $derived(expected ? istNetto - expected.erwartet_netto : 0);
+  let diffPct = $derived(
+    expected && expected.erwartet_netto > 0
+      ? (diffNetto / expected.erwartet_netto) * 100
+      : 0,
+  );
 </script>
 
 <div class="space-y-6">
@@ -86,6 +127,79 @@
       <div class="p-5 text-sm text-[var(--tr-red)]">{error}</div>
     </Card>
   {/if}
+
+  <Card>
+    <CardHeader
+      title="Soll / Ist — Einspeisevergütung"
+      description="Erwartete Vergütung aus Tageserzeugung × Verlauf-Satz vs. tatsächlich vereinnahmt."
+    />
+    <div class="flex items-end gap-4 px-5 pt-5">
+      <div class="w-32 space-y-1.5">
+        <Label>Jahr</Label>
+        <Select
+          bind:value={jahrSel}
+          options={jahre.map((y) => ({ value: String(y), label: String(y) }))}
+        />
+      </div>
+    </div>
+    <dl class="grid grid-cols-2 divide-x divide-[var(--tr-line)] px-0 pt-4 md:grid-cols-4">
+      <div class="px-5 py-4">
+        <dt class="text-xs uppercase text-[var(--tr-text-dim)]">Erwartet (netto)</dt>
+        <dd class="mt-1 font-mono text-lg">
+          {expected ? formatEUR(expected.erwartet_netto) : "—"}
+        </dd>
+        <div class="mt-0.5 text-xs text-[var(--tr-text-faint)]">
+          {expected
+            ? `aus ${expected.kwh.toLocaleString("de-DE", { maximumFractionDigits: 0 })} kWh`
+            : ""}
+        </div>
+      </div>
+      <div class="px-5 py-4">
+        <dt class="text-xs uppercase text-[var(--tr-text-dim)]">Tatsächlich (netto)</dt>
+        <dd class="mt-1 font-mono text-lg">{formatEUR(istNetto)}</dd>
+        <div class="mt-0.5 text-xs text-[var(--tr-text-faint)]">
+          {istKwh > 0
+            ? `aus ${istKwh.toLocaleString("de-DE", { maximumFractionDigits: 0 })} kWh laut Abrechnung`
+            : `${payoutsJahr.length} Buchung(en)`}
+        </div>
+      </div>
+      <div class="px-5 py-4">
+        <dt class="text-xs uppercase text-[var(--tr-text-dim)]">Differenz</dt>
+        <dd
+          class="mt-1 font-mono text-lg"
+          style:color={Math.abs(diffNetto) < 0.5
+            ? "var(--tr-text)"
+            : diffNetto > 0
+              ? "var(--tr-green-dim)"
+              : "var(--tr-red)"}
+        >
+          {expected ? formatEUR(diffNetto) : "—"}
+        </dd>
+        <div class="mt-0.5 text-xs text-[var(--tr-text-faint)]">
+          {expected && expected.erwartet_netto > 0
+            ? `${diffNetto >= 0 ? "+" : ""}${diffPct.toLocaleString("de-DE", { maximumFractionDigits: 1 })}%`
+            : ""}
+        </div>
+      </div>
+      <div class="px-5 py-4">
+        <dt class="text-xs uppercase text-[var(--tr-text-dim)]">Hinweis</dt>
+        <dd class="mt-1 text-sm text-[var(--tr-text-dim)]">
+          {#if !expected || expected.kwh === 0}
+            Keine Einspeisedaten für {jahr}.
+          {:else if expected.tage_ohne_satz > 0}
+            <span style="color: var(--tr-warning);">
+              {expected.tage_ohne_satz} Tag(e) ohne Vergütungssatz —
+              Verlauf in Einstellungen ergänzen.
+            </span>
+          {:else if expected.erwartet_netto === 0}
+            Kein Vergütungssatz hinterlegt.
+          {:else}
+            Vergleich basiert auf Buchungsdatum.
+          {/if}
+        </dd>
+      </div>
+    </dl>
+  </Card>
 
   {#if editing}
     <Card>

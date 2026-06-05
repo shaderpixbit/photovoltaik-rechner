@@ -28,6 +28,7 @@
 
   let erzeugung = $state<number | "">("");
   let einspeisung = $state<number | "">("");
+  let netzbezug = $state<number | "">("");
   let notiz = $state("");
 
   let eigenverbrauchComputed = $derived.by(() => {
@@ -140,11 +141,13 @@
         if (existing) {
           erzeugung = existing.erzeugung_kwh;
           einspeisung = existing.einspeisung_kwh;
+          netzbezug = existing.netzbezug_kwh ?? "";
           notiz = existing.notiz ?? "";
           existingInPeriod = 1;
         } else {
           erzeugung = "";
           einspeisung = "";
+          netzbezug = "";
           notiz = "";
           existingInPeriod = 0;
         }
@@ -154,12 +157,15 @@
         if (rows.length === 0) {
           erzeugung = "";
           einspeisung = "";
+          netzbezug = "";
           notiz = "";
         } else {
           erzeugung = round1(rows.reduce((s, x) => s + x.erzeugung_kwh, 0));
           einspeisung = round1(
             rows.reduce((s, x) => s + x.einspeisung_kwh, 0),
           );
+          const netzSum = rows.reduce((s, x) => s + (x.netzbezug_kwh ?? 0), 0);
+          netzbezug = netzSum > 0 ? round1(netzSum) : "";
           notiz = "";
         }
       }
@@ -208,10 +214,13 @@
     const totalErz = Number(erzeugung) || 0;
     const totalEv = eigenverbrauchComputed;
     const totalEi = Number(einspeisung) || 0;
+    const hasNetz = netzbezug !== "" && Number.isFinite(Number(netzbezug));
+    const totalNetz = hasNetz ? Number(netzbezug) : 0;
     const n = days.length;
     const perErz = totalErz / n;
     const perEv = totalEv / n;
     const perEi = totalEi / n;
+    const perNetz = totalNetz / n;
     const note = notiz.trim() || null;
 
     busy = true;
@@ -222,7 +231,7 @@
           erzeugung_kwh: mode === "tag" ? totalErz : perErz,
           eigenverbrauch_kwh: mode === "tag" ? totalEv : perEv,
           einspeisung_kwh: mode === "tag" ? totalEi : perEi,
-          netzbezug_kwh: null,
+          netzbezug_kwh: hasNetz ? (mode === "tag" ? totalNetz : perNetz) : null,
           notiz: note,
         };
         await upsertDaily(entry);
@@ -319,7 +328,7 @@
       </span>
     </div>
 
-    <div class="grid grid-cols-1 gap-4 px-5 py-5 md:grid-cols-4">
+    <div class="grid grid-cols-1 gap-4 px-5 py-5 md:grid-cols-5">
       <div class="space-y-1.5">
         {#if mode === "tag"}
           <Label for="date">Datum</Label>
@@ -355,7 +364,7 @@
       </div>
       <div class="space-y-1.5">
         <Label for="ei">
-          Einspeisung Bayernwerk (kWh)
+          Einspeisung (kWh)
           {#if mode !== "tag"}<span class="text-[var(--tr-text-faint)]">Summe</span>{/if}
         </Label>
         <Input
@@ -382,7 +391,21 @@
           class="bg-[var(--tr-surface2)] text-[var(--tr-text-dim)]"
         />
       </div>
-      <div class="space-y-1.5 md:col-span-3">
+      <div class="space-y-1.5">
+        <Label for="nb">
+          Netzbezug (kWh)
+          <span class="text-[var(--tr-text-faint)]">optional</span>
+        </Label>
+        <Input
+          id="nb"
+          type="number"
+          step="0.1"
+          min="0"
+          bind:value={netzbezug}
+          placeholder="—"
+        />
+      </div>
+      <div class="space-y-1.5 md:col-span-4">
         <Label for="notiz">Notiz (optional)</Label>
         <Input
           id="notiz"
