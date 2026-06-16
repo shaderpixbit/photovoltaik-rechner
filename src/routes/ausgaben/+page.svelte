@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { deleteExpense, listExpenses, upsertExpense } from "$lib/api";
   import type { Expense, ExpenseKategorie } from "$lib/types";
-  import { formatDateDE, formatEUR, todayISO } from "$lib/utils";
+  import { centsToEuro, euroToCents, formatDateDE, formatEUR, todayISO } from "$lib/utils";
   import Card from "$lib/components/ui/Card.svelte";
   import CardHeader from "$lib/components/ui/CardHeader.svelte";
   import Button from "$lib/components/ui/Button.svelte";
@@ -21,19 +21,44 @@
     "Sonstiges",
   ];
 
+  type ExpenseForm = Omit<Expense, "netto" | "ust" | "brutto"> & {
+    netto_eur: number;
+    ust_eur: number;
+    brutto_eur: number;
+  };
+
+  function toForm(x: Expense): ExpenseForm {
+    const { netto, ust, brutto, ...rest } = x;
+    return {
+      ...rest,
+      netto_eur: centsToEuro(netto),
+      ust_eur: centsToEuro(ust),
+      brutto_eur: centsToEuro(brutto),
+    };
+  }
+  function fromForm(f: ExpenseForm): Expense {
+    const { netto_eur, ust_eur, brutto_eur, ...rest } = f;
+    return {
+      ...rest,
+      netto: euroToCents(netto_eur),
+      ust: euroToCents(ust_eur),
+      brutto: euroToCents(brutto_eur),
+    };
+  }
+
   let items = $state<Expense[]>([]);
-  let editing = $state<Expense | null>(null);
+  let editing = $state<ExpenseForm | null>(null);
   let error = $state<string | null>(null);
 
-  function leer(): Expense {
+  function leer(): ExpenseForm {
     return {
       id: 0,
       date: todayISO(),
       kategorie: "Versicherung",
       beschreibung: "",
-      netto: 0,
-      ust: 0,
-      brutto: 0,
+      netto_eur: 0,
+      ust_eur: 0,
+      brutto_eur: 0,
       vorsteuer_abzugsfaehig: true,
     };
   }
@@ -50,9 +75,10 @@
 
   async function save() {
     if (!editing) return;
-    if (!editing.brutto) editing.brutto = (editing.netto ?? 0) + (editing.ust ?? 0);
+    if (!editing.brutto_eur)
+      editing.brutto_eur = (editing.netto_eur ?? 0) + (editing.ust_eur ?? 0);
     try {
-      await upsertExpense(editing);
+      await upsertExpense(fromForm(editing));
       editing = null;
       await reload();
     } catch (e) {
@@ -109,15 +135,15 @@
         </div>
         <div class="space-y-1.5">
           <Label>Netto (€)</Label>
-          <Input type="number" step="0.01" bind:value={editing.netto} />
+          <Input type="number" step="0.01" bind:value={editing.netto_eur} />
         </div>
         <div class="space-y-1.5">
           <Label>USt (€)</Label>
-          <Input type="number" step="0.01" bind:value={editing.ust} />
+          <Input type="number" step="0.01" bind:value={editing.ust_eur} />
         </div>
         <div class="space-y-1.5">
           <Label>Brutto (€)</Label>
-          <Input type="number" step="0.01" bind:value={editing.brutto} />
+          <Input type="number" step="0.01" bind:value={editing.brutto_eur} />
         </div>
         <label
           class="flex items-end gap-2 text-sm text-[var(--tr-text-dim)]"
@@ -165,7 +191,7 @@
           {#each items as x (x.id)}
             <tr
               class="cursor-pointer border-t border-[var(--tr-line)] hover:bg-[var(--tr-surface2)]"
-              onclick={() => (editing = { ...x })}
+              onclick={() => (editing = toForm(x))}
             >
               <td class="px-5 py-2 font-mono">{formatDateDE(x.date)}</td>
               <td class="px-5 py-2">{x.kategorie}</td>

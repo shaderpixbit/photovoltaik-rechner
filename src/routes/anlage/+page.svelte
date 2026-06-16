@@ -8,7 +8,7 @@
     upsertAsset,
   } from "$lib/api";
   import type { Asset } from "$lib/types";
-  import { formatDateDE, formatEUR, todayISO } from "$lib/utils";
+  import { centsToEuro, euroToCents, formatDateDE, formatEUR, todayISO } from "$lib/utils";
   import Card from "$lib/components/ui/Card.svelte";
   import CardHeader from "$lib/components/ui/CardHeader.svelte";
   import Button from "$lib/components/ui/Button.svelte";
@@ -29,23 +29,73 @@
     { value: "gwg_sofort", label: "GWG-Sofortabzug (≤800 € netto)" },
   ];
 
+  type AssetForm = Omit<
+    Asset,
+    | "anschaffung_netto"
+    | "anschaffung_ust"
+    | "verkaufserloes_netto"
+    | "verkaufserloes_ust"
+  > & {
+    anschaffung_netto_eur: number;
+    anschaffung_ust_eur: number;
+    verkaufserloes_netto_eur: number | null;
+    verkaufserloes_ust_eur: number | null;
+  };
+
+  function toForm(a: Asset): AssetForm {
+    const {
+      anschaffung_netto,
+      anschaffung_ust,
+      verkaufserloes_netto,
+      verkaufserloes_ust,
+      ...rest
+    } = a;
+    return {
+      ...rest,
+      anschaffung_netto_eur: centsToEuro(anschaffung_netto),
+      anschaffung_ust_eur: centsToEuro(anschaffung_ust),
+      verkaufserloes_netto_eur:
+        verkaufserloes_netto == null ? null : centsToEuro(verkaufserloes_netto),
+      verkaufserloes_ust_eur:
+        verkaufserloes_ust == null ? null : centsToEuro(verkaufserloes_ust),
+    };
+  }
+  function fromForm(f: AssetForm): Asset {
+    const {
+      anschaffung_netto_eur,
+      anschaffung_ust_eur,
+      verkaufserloes_netto_eur,
+      verkaufserloes_ust_eur,
+      ...rest
+    } = f;
+    return {
+      ...rest,
+      anschaffung_netto: euroToCents(anschaffung_netto_eur),
+      anschaffung_ust: euroToCents(anschaffung_ust_eur),
+      verkaufserloes_netto:
+        verkaufserloes_netto_eur == null ? null : euroToCents(verkaufserloes_netto_eur),
+      verkaufserloes_ust:
+        verkaufserloes_ust_eur == null ? null : euroToCents(verkaufserloes_ust_eur),
+    };
+  }
+
   let assets = $state<Asset[]>([]);
-  let editing = $state<Asset | null>(null);
+  let editing = $state<AssetForm | null>(null);
   let error = $state<string | null>(null);
 
-  function leer(): Asset {
+  function leer(): AssetForm {
     return {
       id: 0,
       name: "PV-Anlage",
       inbetriebnahme: todayISO(),
-      anschaffung_netto: 0,
-      anschaffung_ust: 0,
+      anschaffung_netto_eur: 0,
+      anschaffung_ust_eur: 0,
       nutzungsdauer_jahre: 20,
       afa_methode: "linear",
       sonderabschreibung_prozent: 0,
       verkauft_am: null,
-      verkaufserloes_netto: null,
-      verkaufserloes_ust: null,
+      verkaufserloes_netto_eur: null,
+      verkaufserloes_ust_eur: null,
       notiz: null,
     };
   }
@@ -62,7 +112,7 @@
   async function save() {
     if (!editing) return;
     try {
-      await upsertAsset(editing);
+      await upsertAsset(fromForm(editing));
       editing = null;
       await reload();
     } catch (e) {
@@ -205,11 +255,11 @@
         </div>
         <div class="space-y-1.5">
           <Label>Anschaffung Netto (€)</Label>
-          <Input type="number" step="0.01" bind:value={editing.anschaffung_netto} />
+          <Input type="number" step="0.01" bind:value={editing.anschaffung_netto_eur} />
         </div>
         <div class="space-y-1.5">
           <Label>Anschaffung USt (€)</Label>
-          <Input type="number" step="0.01" bind:value={editing.anschaffung_ust} />
+          <Input type="number" step="0.01" bind:value={editing.anschaffung_ust_eur} />
         </div>
         <div class="space-y-1.5">
           <Label>Nutzungsdauer (Jahre)</Label>
@@ -255,11 +305,11 @@
               <Input
                 type="number"
                 step="0.01"
-                value={editing.verkaufserloes_netto ?? ""}
+                value={editing.verkaufserloes_netto_eur ?? ""}
                 oninput={(e) => {
                   if (editing) {
                     const v = (e.currentTarget as HTMLInputElement).valueAsNumber;
-                    editing.verkaufserloes_netto = Number.isNaN(v) ? null : v;
+                    editing.verkaufserloes_netto_eur = Number.isNaN(v) ? null : v;
                   }
                 }}
               />
@@ -269,11 +319,11 @@
               <Input
                 type="number"
                 step="0.01"
-                value={editing.verkaufserloes_ust ?? ""}
+                value={editing.verkaufserloes_ust_eur ?? ""}
                 oninput={(e) => {
                   if (editing) {
                     const v = (e.currentTarget as HTMLInputElement).valueAsNumber;
-                    editing.verkaufserloes_ust = Number.isNaN(v) ? null : v;
+                    editing.verkaufserloes_ust_eur = Number.isNaN(v) ? null : v;
                   }
                 }}
               />
@@ -336,7 +386,7 @@
             <tr
               class="cursor-pointer border-t border-[var(--tr-line)] hover:bg-[var(--tr-surface2)]"
               class:opacity-60={!!a.verkauft_am}
-              onclick={() => (editing = { ...a })}
+              onclick={() => (editing = toForm(a))}
             >
               <td class="px-5 py-2 font-medium">
                 {a.name}

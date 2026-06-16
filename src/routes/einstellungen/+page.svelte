@@ -21,20 +21,18 @@
     UstPeriode,
     VerguetungPeriode,
   } from "$lib/types";
-  import { todayISO, formatDateDE } from "$lib/utils";
+  import { centsToEuro, euroToCents, todayISO, formatDateDE } from "$lib/utils";
   import Card from "$lib/components/ui/Card.svelte";
   import CardHeader from "$lib/components/ui/CardHeader.svelte";
   import Button from "$lib/components/ui/Button.svelte";
   import Input from "$lib/components/ui/Input.svelte";
   import Label from "$lib/components/ui/Label.svelte";
   import Select from "$lib/components/ui/Select.svelte";
-  import DateField from "$lib/components/ui/DateField.svelte";
+  import PeriodVerlauf from "$lib/components/PeriodVerlauf.svelte";
   import {
     DatabaseIcon,
     DownloadIcon,
-    PlusIcon,
     SaveIcon,
-    Trash2Icon,
     UploadIcon,
   } from "@lucide/svelte";
 
@@ -52,6 +50,13 @@
   async function reload() {
     try {
       settings = await getSettings();
+      // Grundgebühr kommt in Cents — für die Form ins €-Darstellungs-Feld konvertieren.
+      // Beim Save wird zurück konvertiert. Der Typ bleibt `number`, nur die Semantik
+      // wechselt zwischen "API/Cents" und "Form/€".
+      settings.stromtarif_perioden = settings.stromtarif_perioden.map((p) => ({
+        ...p,
+        grundgebuehr_eur_per_monat: centsToEuro(p.grundgebuehr_eur_per_monat),
+      }));
       satzProzent = settings.ust_satz_regel * 100;
       evPreis = settings.eigenverbrauch_preis;
       bezugPreis = settings.strom_bezugspreis;
@@ -68,6 +73,10 @@
     return -Math.floor(Math.random() * 1e9);
   }
 
+  function byDate<T extends { effective_from: string }>(a: T, b: T): number {
+    return a.effective_from.localeCompare(b.effective_from);
+  }
+
   function addUstPeriode() {
     if (!settings) return;
     const neu: UstPeriode = {
@@ -75,9 +84,7 @@
       effective_from: todayISO(),
       modus: "regel",
     };
-    settings.ust_perioden = [...settings.ust_perioden, neu].sort((a, b) =>
-      a.effective_from.localeCompare(b.effective_from),
-    );
+    settings.ust_perioden = [...settings.ust_perioden, neu].sort(byDate);
   }
 
   function removeUstPeriode(id: number) {
@@ -93,7 +100,7 @@
       modus: "gewerblich",
     };
     settings.betreiber_perioden = [...settings.betreiber_perioden, neu].sort(
-      (a, b) => a.effective_from.localeCompare(b.effective_from),
+      byDate,
     );
   }
 
@@ -113,7 +120,7 @@
       satz_ct_per_kwh: 8.2,
     };
     settings.verguetung_perioden = [...settings.verguetung_perioden, neu].sort(
-      (a, b) => a.effective_from.localeCompare(b.effective_from),
+      byDate,
     );
   }
 
@@ -133,7 +140,7 @@
       grundgebuehr_eur_per_monat: 0,
     };
     settings.stromtarif_perioden = [...settings.stromtarif_perioden, neu].sort(
-      (a, b) => a.effective_from.localeCompare(b.effective_from),
+      byDate,
     );
   }
 
@@ -153,18 +160,16 @@
       settings.strom_bezugspreis = bezugPreis;
       settings.anker_api_url = apiUrl.trim() || null;
       settings.anker_api_token = apiToken.trim() || null;
-      settings.ust_perioden = [...settings.ust_perioden].sort((a, b) =>
-        a.effective_from.localeCompare(b.effective_from),
-      );
-      settings.betreiber_perioden = [...settings.betreiber_perioden].sort(
-        (a, b) => a.effective_from.localeCompare(b.effective_from),
-      );
-      settings.verguetung_perioden = [...settings.verguetung_perioden].sort(
-        (a, b) => a.effective_from.localeCompare(b.effective_from),
-      );
-      settings.stromtarif_perioden = [...settings.stromtarif_perioden].sort(
-        (a, b) => a.effective_from.localeCompare(b.effective_from),
-      );
+      settings.ust_perioden = [...settings.ust_perioden].sort(byDate);
+      settings.betreiber_perioden = [...settings.betreiber_perioden].sort(byDate);
+      settings.verguetung_perioden = [...settings.verguetung_perioden].sort(byDate);
+      // Grundgebühr für API zurück in Cents konvertieren.
+      settings.stromtarif_perioden = [...settings.stromtarif_perioden]
+        .sort(byDate)
+        .map((p) => ({
+          ...p,
+          grundgebuehr_eur_per_monat: euroToCents(p.grundgebuehr_eur_per_monat),
+        }));
       await setSettings(settings);
       saved = true;
       setTimeout(() => (saved = false), 2000);
@@ -260,172 +265,100 @@
   {#if !settings}
     <div class="text-sm text-[var(--tr-text-dim)]">Lädt…</div>
   {:else}
-    <Card>
-      <CardHeader
-        title="Betreiber-Status (ESt)"
-        description="Privat = §3 Nr. 72 EStG (ESt-frei bis 30 kWp / 15 kWp je Wohneinheit). Gewerblich = EÜR-pflichtig."
-      />
-      <div class="divide-y divide-[var(--tr-line)]">
-        {#each settings.betreiber_perioden as p (p.id)}
-          <div class="grid grid-cols-1 items-end gap-3 px-5 py-3 md:grid-cols-3">
-            <div class="space-y-1.5">
-              <Label>Gültig ab</Label>
-              <DateField bind:value={p.effective_from} />
-            </div>
-            <div class="space-y-1.5">
-              <Label>Status</Label>
-              <Select
-                bind:value={p.modus as unknown as string}
-                options={BETREIBER_MODI.map((m) => ({
-                  value: m.value,
-                  label: m.label,
-                }))}
-              />
-            </div>
-            <div class="flex items-end">
-              <Button variant="ghost" onclick={() => removeBetreiberPeriode(p.id)}>
-                <Trash2Icon class="size-4" />Entfernen
-              </Button>
-            </div>
-          </div>
-        {/each}
-      </div>
-      <div class="border-t border-[var(--tr-line)] px-5 py-3">
-        <Button variant="secondary" onclick={addBetreiberPeriode}>
-          <PlusIcon class="size-4" />Periode hinzufügen
-        </Button>
-      </div>
-    </Card>
+    <PeriodVerlauf
+      title="Betreiber-Status (ESt)"
+      description="Privat = §3 Nr. 72 EStG (ESt-frei bis 30 kWp / 15 kWp je Wohneinheit). Gewerblich = EÜR-pflichtig."
+      items={settings.betreiber_perioden}
+      onAdd={addBetreiberPeriode}
+      onRemove={removeBetreiberPeriode}
+    >
+      {#snippet row(p: BetreiberPeriode)}
+        <div class="space-y-1.5">
+          <Label>Status</Label>
+          <Select
+            bind:value={p.modus as unknown as string}
+            options={BETREIBER_MODI.map((m) => ({
+              value: m.value,
+              label: m.label,
+            }))}
+          />
+        </div>
+      {/snippet}
+    </PeriodVerlauf>
 
-    <Card>
-      <CardHeader
-        title="USt-Modus-Verlauf"
-        description="Mehrere Perioden möglich (z.B. erst Regelbesteuerung, später Kleinunternehmer)."
-      />
-      <div class="divide-y divide-[var(--tr-line)]">
-        {#each settings.ust_perioden as p (p.id)}
-          <div class="grid grid-cols-1 items-end gap-3 px-5 py-3 md:grid-cols-3">
-            <div class="space-y-1.5">
-              <Label>Gültig ab</Label>
-              <DateField bind:value={p.effective_from} />
-            </div>
-            <div class="space-y-1.5">
-              <Label>Modus</Label>
-              <Select
-                bind:value={p.modus as unknown as string}
-                options={UST_MODI.map((m) => ({ value: m.value, label: m.label }))}
-              />
-            </div>
-            <div class="flex items-end">
-              <Button variant="ghost" onclick={() => removeUstPeriode(p.id)}>
-                <Trash2Icon class="size-4" />Entfernen
-              </Button>
-            </div>
-          </div>
-        {/each}
-      </div>
-      <div class="border-t border-[var(--tr-line)] px-5 py-3">
-        <Button variant="secondary" onclick={addUstPeriode}>
-          <PlusIcon class="size-4" />Periode hinzufügen
-        </Button>
-      </div>
-    </Card>
+    <PeriodVerlauf
+      title="USt-Modus-Verlauf"
+      description="Mehrere Perioden möglich (z.B. erst Regelbesteuerung, später Kleinunternehmer)."
+      items={settings.ust_perioden}
+      onAdd={addUstPeriode}
+      onRemove={removeUstPeriode}
+    >
+      {#snippet row(p: UstPeriode)}
+        <div class="space-y-1.5">
+          <Label>Modus</Label>
+          <Select
+            bind:value={p.modus as unknown as string}
+            options={UST_MODI.map((m) => ({ value: m.value, label: m.label }))}
+          />
+        </div>
+      {/snippet}
+    </PeriodVerlauf>
 
-    <Card>
-      <CardHeader
-        title="Einspeisevergütung-Verlauf"
-        description="EEG-Vergütungssätze je Inbetriebnahmemonat / Modell (ct/kWh). Wird für die Plausibilitätsprüfung der Auszahlungen verwendet."
-      />
-      <div class="divide-y divide-[var(--tr-line)]">
-        {#each settings.verguetung_perioden as p (p.id)}
-          <div class="grid grid-cols-1 items-end gap-3 px-5 py-3 md:grid-cols-4">
-            <div class="space-y-1.5">
-              <Label>Gültig ab</Label>
-              <DateField bind:value={p.effective_from} />
-            </div>
-            <div class="space-y-1.5">
-              <Label>Modell</Label>
-              <Select
-                bind:value={p.modell as unknown as string}
-                options={EINSPEISE_MODELLE.map((m) => ({
-                  value: m.value,
-                  label: m.label,
-                }))}
-              />
-            </div>
-            <div class="space-y-1.5">
-              <Label>Satz (ct / kWh)</Label>
-              <Input type="number" step="0.001" bind:value={p.satz_ct_per_kwh} />
-            </div>
-            <div class="flex items-end">
-              <Button variant="ghost" onclick={() => removeVerguetungPeriode(p.id)}>
-                <Trash2Icon class="size-4" />Entfernen
-              </Button>
-            </div>
-          </div>
-        {/each}
-        {#if settings.verguetung_perioden.length === 0}
-          <div class="px-5 py-3 text-xs text-[var(--tr-text-dim)]">
-            Noch kein Vergütungssatz hinterlegt. Ohne Eintrag ist keine
-            Auszahlungs-Plausibilität möglich.
-          </div>
-        {/if}
-      </div>
-      <div class="border-t border-[var(--tr-line)] px-5 py-3">
-        <Button variant="secondary" onclick={addVerguetungPeriode}>
-          <PlusIcon class="size-4" />Periode hinzufügen
-        </Button>
-      </div>
-    </Card>
+    <PeriodVerlauf
+      title="Einspeisevergütung-Verlauf"
+      description="EEG-Vergütungssätze je Inbetriebnahmemonat / Modell (ct/kWh). Wird für die Plausibilitätsprüfung der Auszahlungen verwendet."
+      items={settings.verguetung_perioden}
+      onAdd={addVerguetungPeriode}
+      onRemove={removeVerguetungPeriode}
+      columns={4}
+      emptyMessage="Noch kein Vergütungssatz hinterlegt. Ohne Eintrag ist keine Auszahlungs-Plausibilität möglich."
+    >
+      {#snippet row(p: VerguetungPeriode)}
+        <div class="space-y-1.5">
+          <Label>Modell</Label>
+          <Select
+            bind:value={p.modell as unknown as string}
+            options={EINSPEISE_MODELLE.map((m) => ({
+              value: m.value,
+              label: m.label,
+            }))}
+          />
+        </div>
+        <div class="space-y-1.5">
+          <Label>Satz (ct / kWh)</Label>
+          <Input type="number" step="0.001" bind:value={p.satz_ct_per_kwh} />
+        </div>
+      {/snippet}
+    </PeriodVerlauf>
 
-    <Card>
-      <CardHeader
-        title="Stromtarif-Verlauf"
-        description="Arbeitspreis (€/kWh) und optional Grundgebühr (€/Monat). Wird für die Ersparnis-Berechnung im Dashboard taggenau ausgewertet."
-      />
-      <div class="divide-y divide-[var(--tr-line)]">
-        {#each settings.stromtarif_perioden as p (p.id)}
-          <div class="grid grid-cols-1 items-end gap-3 px-5 py-3 md:grid-cols-4">
-            <div class="space-y-1.5">
-              <Label>Gültig ab</Label>
-              <DateField bind:value={p.effective_from} />
-            </div>
-            <div class="space-y-1.5">
-              <Label>Arbeitspreis (€ / kWh)</Label>
-              <Input
-                type="number"
-                step="0.0001"
-                bind:value={p.arbeitspreis_eur_per_kwh}
-              />
-            </div>
-            <div class="space-y-1.5">
-              <Label>Grundgebühr (€ / Monat)</Label>
-              <Input
-                type="number"
-                step="0.01"
-                bind:value={p.grundgebuehr_eur_per_monat}
-              />
-            </div>
-            <div class="flex items-end">
-              <Button variant="ghost" onclick={() => removeStromtarifPeriode(p.id)}>
-                <Trash2Icon class="size-4" />Entfernen
-              </Button>
-            </div>
-          </div>
-        {/each}
-        {#if settings.stromtarif_perioden.length === 0}
-          <div class="px-5 py-3 text-xs text-[var(--tr-text-dim)]">
-            Kein Tarif hinterlegt — die Ersparnis fällt auf den Fallback-Preis
-            unten zurück.
-          </div>
-        {/if}
-      </div>
-      <div class="border-t border-[var(--tr-line)] px-5 py-3">
-        <Button variant="secondary" onclick={addStromtarifPeriode}>
-          <PlusIcon class="size-4" />Periode hinzufügen
-        </Button>
-      </div>
-    </Card>
+    <PeriodVerlauf
+      title="Stromtarif-Verlauf"
+      description="Arbeitspreis (€/kWh) und optional Grundgebühr (€/Monat). Wird für die Ersparnis-Berechnung im Dashboard taggenau ausgewertet."
+      items={settings.stromtarif_perioden}
+      onAdd={addStromtarifPeriode}
+      onRemove={removeStromtarifPeriode}
+      columns={4}
+      emptyMessage="Kein Tarif hinterlegt — die Ersparnis fällt auf den Fallback-Preis unten zurück."
+    >
+      {#snippet row(p: StromtarifPeriode)}
+        <div class="space-y-1.5">
+          <Label>Arbeitspreis (€ / kWh)</Label>
+          <Input
+            type="number"
+            step="0.0001"
+            bind:value={p.arbeitspreis_eur_per_kwh}
+          />
+        </div>
+        <div class="space-y-1.5">
+          <Label>Grundgebühr (€ / Monat)</Label>
+          <Input
+            type="number"
+            step="0.01"
+            bind:value={p.grundgebuehr_eur_per_monat}
+          />
+        </div>
+      {/snippet}
+    </PeriodVerlauf>
 
     <Card>
       <CardHeader title="Steuersätze & Preise" />
@@ -466,7 +399,9 @@
           <Input type="password" bind:value={apiToken} placeholder="••••••" />
         </div>
       </div>
-      <div class="border-t border-[var(--tr-line)] px-5 py-3 text-xs text-[var(--tr-text-dim)]">
+      <div
+        class="border-t border-[var(--tr-line)] px-5 py-3 text-xs text-[var(--tr-text-dim)]"
+      >
         Der konkrete Import-Adapter wird ergänzt, sobald die API-Spezifikation
         feststeht. Bis dahin meldet der Import-Button einen klaren Fehler statt
         stillschweigend nichts zu tun.
@@ -494,7 +429,9 @@
         <Button variant="ghost" onclick={doImportBackup} disabled={backupBusy}>
           <UploadIcon class="size-4" />Backup importieren
         </Button>
-        <span class="inline-flex items-center gap-2 text-xs text-[var(--tr-text-faint)]">
+        <span
+          class="inline-flex items-center gap-2 text-xs text-[var(--tr-text-faint)]"
+        >
           <DatabaseIcon class="size-3.5" />
           Datei: <code>photovoltaik.db</code> neben der Executable (WAL-Journal).
         </span>

@@ -1,4 +1,8 @@
-// Mirrors Rust structs in src-tauri/src/lib.rs. Keep field-for-field in sync.
+// Mirrors Rust structs in src-tauri/src/types.rs. Keep field-for-field in sync.
+//
+// Geldfelder sind in **Cents** (Integer). Rates wie €/kWh, USt-Sätze und
+// Sonderabschreibung-% bleiben Dezimalzahlen. Formatter: `formatEUR(cents)`,
+// Konvertierung Form ↔ API: `centsFromEuro(eur)` / `centsToEuro(cents)` aus utils.
 
 export interface DailyProduction {
   /** ISO date YYYY-MM-DD */
@@ -18,8 +22,11 @@ export interface Payout {
   /** Abgerechneter Zeitraum von / bis (ISO) */
   zeitraum_von: string;
   zeitraum_bis: string;
+  /** Cents. */
   netto: number;
+  /** Cents. */
   ust: number;
+  /** Cents. */
   brutto: number;
   /** kWh laut Abrechnung (optional) */
   kwh: number | null;
@@ -39,8 +46,11 @@ export interface Expense {
   date: string;
   kategorie: ExpenseKategorie;
   beschreibung: string;
+  /** Cents. */
   netto: number;
+  /** Cents. */
   ust: number;
+  /** Cents. */
   brutto: number;
   vorsteuer_abzugsfaehig: boolean;
 }
@@ -58,14 +68,18 @@ export interface Asset {
   id: number;
   name: string;
   inbetriebnahme: string;
+  /** Cents. */
   anschaffung_netto: number;
+  /** Cents. */
   anschaffung_ust: number;
   nutzungsdauer_jahre: number;
   afa_methode: AfaMethode;
   /** Sonderabschreibung §7g Abs. 5 EStG im Erstjahr (0–50 % der AK). */
   sonderabschreibung_prozent: number;
   verkauft_am: string | null;
+  /** Cents. */
   verkaufserloes_netto: number | null;
+  /** Cents. */
   verkaufserloes_ust: number | null;
   notiz: string | null;
 }
@@ -101,11 +115,10 @@ export interface BetreiberPeriode {
 }
 
 /**
- * Einspeisemodell und Vergütungssatz (Cent/kWh). Modell:
+ * Einspeisemodell und Vergütungssatz (Cent/kWh, bleibt Dezimal). Modell:
  * - `ueberschuss` — Überschusseinspeisung (Standardfall bei Eigenverbrauch).
  * - `voll` — Volleinspeisung.
- * - `direktvermarktung` — Vermarktung über Direktvermarkter (variabler Satz,
- *   hier als Schnitt-/Anzahlungssatz erfasst).
+ * - `direktvermarktung` — Vermarktung über Direktvermarkter.
  */
 export type EinspeiseModell = "ueberschuss" | "voll" | "direktvermarktung";
 
@@ -125,7 +138,9 @@ export interface VerguetungPeriode {
 export interface StromtarifPeriode {
   id: number;
   effective_from: string;
+  /** Rate €/kWh (Dezimal, kein Cent). */
   arbeitspreis_eur_per_kwh: number;
+  /** Cents pro Monat. */
   grundgebuehr_eur_per_monat: number;
 }
 
@@ -155,6 +170,7 @@ export interface Aggregat {
   tage: number;
 }
 
+/** Alle Geldfelder in Cents. */
 export interface EuerReport {
   jahr: number;
   einnahmen_einspeisung_netto: number;
@@ -177,11 +193,13 @@ export interface ExpectedEinspeisung {
   jahr: number;
   monat: number | null;
   kwh: number;
+  /** Cents. */
   erwartet_netto: number;
   /** Tage im Zeitraum mit Einspeisung, aber ohne hinterlegten Vergütungssatz. */
   tage_ohne_satz: number;
 }
 
+/** Alle Geldfelder in Cents. */
 export interface UstvaReport {
   jahr: number;
   monat: number | null;
@@ -198,8 +216,9 @@ export interface DashboardSnapshot {
   monat_kwh: number;
   jahr_kwh: number;
   max_tag: DailyProduction | null;
+  /** Cents. */
   einnahmen_jahr: number;
-  /** Vermiedene Stromkosten = Σ Eigenverbrauch im Jahr × Strom-Bezugspreis. */
+  /** Cents. Vermiedene Stromkosten = Σ Eigenverbrauch × Strom-Bezugspreis. */
   einsparung_jahr: number;
   betreiber_modus: BetreiberModus;
 }

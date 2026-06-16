@@ -7,7 +7,7 @@
     upsertPayout,
   } from "$lib/api";
   import type { ExpectedEinspeisung, Payout } from "$lib/types";
-  import { formatDateDE, formatEUR, todayISO } from "$lib/utils";
+  import { centsToEuro, euroToCents, formatDateDE, formatEUR, todayISO } from "$lib/utils";
   import Card from "$lib/components/ui/Card.svelte";
   import CardHeader from "$lib/components/ui/CardHeader.svelte";
   import Button from "$lib/components/ui/Button.svelte";
@@ -17,8 +17,34 @@
   import DateField from "$lib/components/ui/DateField.svelte";
   import { PlusIcon, SaveIcon, Trash2Icon, XIcon } from "@lucide/svelte";
 
+  /** Form-Variante mit €-Feldern (Inputs zeigen Dezimal-€, API erwartet Cents). */
+  type PayoutForm = Omit<Payout, "netto" | "ust" | "brutto"> & {
+    netto_eur: number;
+    ust_eur: number;
+    brutto_eur: number;
+  };
+
+  function toForm(p: Payout): PayoutForm {
+    const { netto, ust, brutto, ...rest } = p;
+    return {
+      ...rest,
+      netto_eur: centsToEuro(netto),
+      ust_eur: centsToEuro(ust),
+      brutto_eur: centsToEuro(brutto),
+    };
+  }
+  function fromForm(f: PayoutForm): Payout {
+    const { netto_eur, ust_eur, brutto_eur, ...rest } = f;
+    return {
+      ...rest,
+      netto: euroToCents(netto_eur),
+      ust: euroToCents(ust_eur),
+      brutto: euroToCents(brutto_eur),
+    };
+  }
+
   let payouts = $state<Payout[]>([]);
-  let editing = $state<Payout | null>(null);
+  let editing = $state<PayoutForm | null>(null);
   let error = $state<string | null>(null);
 
   const currentYear = new Date().getFullYear();
@@ -27,15 +53,15 @@
   const jahre = Array.from({ length: 10 }, (_, i) => currentYear - i);
   let expected = $state<ExpectedEinspeisung | null>(null);
 
-  function leer(): Payout {
+  function leer(): PayoutForm {
     return {
       id: 0,
       buchung_date: todayISO(),
       zeitraum_von: "",
       zeitraum_bis: "",
-      netto: 0,
-      ust: 0,
-      brutto: 0,
+      netto_eur: 0,
+      ust_eur: 0,
+      brutto_eur: 0,
       kwh: null,
       notiz: null,
     };
@@ -72,10 +98,10 @@
     if (!editing) return;
     try {
       // Brutto auto-berechnen falls leer / 0
-      if (!editing.brutto || editing.brutto === 0) {
-        editing.brutto = (editing.netto ?? 0) + (editing.ust ?? 0);
+      if (!editing.brutto_eur || editing.brutto_eur === 0) {
+        editing.brutto_eur = (editing.netto_eur ?? 0) + (editing.ust_eur ?? 0);
       }
-      await upsertPayout(editing);
+      await upsertPayout(fromForm(editing));
       editing = null;
       await reload();
     } catch (e) {
@@ -168,7 +194,7 @@
         <dt class="text-xs uppercase text-[var(--tr-text-dim)]">Differenz</dt>
         <dd
           class="mt-1 font-mono text-lg"
-          style:color={Math.abs(diffNetto) < 0.5
+          style:color={Math.abs(diffNetto) < 50
             ? "var(--tr-text)"
             : diffNetto > 0
               ? "var(--tr-green-dim)"
@@ -236,15 +262,15 @@
         </div>
         <div class="space-y-1.5">
           <Label>Netto (€)</Label>
-          <Input type="number" step="0.01" bind:value={editing.netto} />
+          <Input type="number" step="0.01" bind:value={editing.netto_eur} />
         </div>
         <div class="space-y-1.5">
           <Label>USt (€)</Label>
-          <Input type="number" step="0.01" bind:value={editing.ust} />
+          <Input type="number" step="0.01" bind:value={editing.ust_eur} />
         </div>
         <div class="space-y-1.5">
           <Label>Brutto (€)</Label>
-          <Input type="number" step="0.01" bind:value={editing.brutto} />
+          <Input type="number" step="0.01" bind:value={editing.brutto_eur} />
         </div>
         <div class="space-y-1.5 md:col-span-3">
           <Label>Notiz</Label>
@@ -297,7 +323,7 @@
           {#each payouts as p (p.id)}
             <tr
               class="cursor-pointer border-t border-[var(--tr-line)] hover:bg-[var(--tr-surface2)]"
-              onclick={() => (editing = { ...p })}
+              onclick={() => (editing = toForm(p))}
             >
               <td class="px-5 py-2 font-mono">{formatDateDE(p.buchung_date)}</td>
               <td class="px-5 py-2 text-[var(--tr-text-dim)]">
