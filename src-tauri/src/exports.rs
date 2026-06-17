@@ -659,16 +659,32 @@ fn resolve_sidecar() -> Result<std::process::Command, String> {
     }
 
     // Variante 3: Dev-Fallback — Python-Script direkt im Repo aufrufen.
+    // Bevorzugt das venv-Python (build-sidecar.sh hat dort die Anker-Deps
+    // installiert). Faellt nur auf System-`python3` zurueck wenn kein venv
+    // existiert — dann muss der User die Deps systemweit installiert haben.
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    for candidate in [
-        cwd.join("vendor-import-anker").join("main.py"),
-        cwd.join("..").join("vendor-import-anker").join("main.py"),
-    ] {
-        if candidate.is_file() {
-            let mut cmd = std::process::Command::new("python3");
-            cmd.arg(candidate);
-            return Ok(cmd);
+    let venv_python_rel = if cfg!(windows) {
+        ["vendor-import-anker", ".venv", "Scripts", "python.exe"]
+    } else {
+        ["vendor-import-anker", ".venv", "bin", "python"]
+    };
+    for base in [cwd.clone(), cwd.join("..")] {
+        let script = base.join("vendor-import-anker").join("main.py");
+        if !script.is_file() {
+            continue;
         }
+        let mut venv_python = base.clone();
+        for part in venv_python_rel {
+            venv_python.push(part);
+        }
+        let interpreter = if venv_python.is_file() {
+            venv_python.into_os_string()
+        } else {
+            std::ffi::OsString::from("python3")
+        };
+        let mut cmd = std::process::Command::new(interpreter);
+        cmd.arg(script);
+        return Ok(cmd);
     }
 
     Err(
