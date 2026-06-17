@@ -116,6 +116,28 @@ export async function setSettings(settings: Settings): Promise<void> {
   await invoke("set_settings", { settings });
 }
 
+/* ── Gefahrenzone ──────────────────────────────────────────────────────── */
+
+export interface WipeSummary {
+  deleted_daily: number;
+  deleted_payouts: number;
+  deleted_expenses: number;
+  deleted_assets: number;
+  deleted_verlauf_eintraege: number;
+}
+
+/**
+ * Loescht ALLE Nutzdaten irreversibel. Schema bleibt erhalten, Defaults
+ * werden neu geseedet. `confirmationToken` muss exakt "WIPE" sein — sonst
+ * lehnt Rust ab. UI fragt diesen Token via Input-Feld beim Nutzer ab.
+ */
+export async function wipeDatabase(
+  confirmationToken: string,
+): Promise<WipeSummary> {
+  ensureTauri();
+  return await invoke("wipe_database", { confirmationToken });
+}
+
 /* ── Reports / Statistik ─────────────────────────────────────────────────── */
 
 export async function getDashboard(): Promise<DashboardSnapshot> {

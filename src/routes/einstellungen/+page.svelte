@@ -9,7 +9,9 @@
     getSettings,
     importBackup,
     setSettings,
+    wipeDatabase,
     type BackupSummary,
+    type WipeSummary,
   } from "$lib/api";
   import type {
     BetreiberModus,
@@ -34,6 +36,8 @@
     DatabaseIcon,
     DownloadIcon,
     SaveIcon,
+    TriangleAlertIcon,
+    Trash2Icon,
     UploadIcon,
   } from "@lucide/svelte";
 
@@ -260,6 +264,38 @@
       error = e instanceof Error ? e.message : String(e);
     } finally {
       backupBusy = false;
+    }
+  }
+
+  // ── Gefahrenzone: kompletter DB-Wipe ──────────────────────────────────
+  // Zwei-Stufen-Bestaetigung: Card aufklappen + WIPE eintippen + finaler Klick.
+  let wipeOpen = $state(false);
+  let wipeConfirmInput = $state("");
+  let wipeBusy = $state(false);
+  let wipeMsg = $state<string | null>(null);
+
+  function wipeSummary(s: WipeSummary): string {
+    return (
+      `Geloescht: ${s.deleted_daily} Tage, ${s.deleted_payouts} Auszahlungen, ` +
+      `${s.deleted_expenses} Ausgaben, ${s.deleted_assets} Anlagen, ` +
+      `${s.deleted_verlauf_eintraege} Verlaufs-Eintraege.`
+    );
+  }
+
+  async function doWipe() {
+    if (wipeConfirmInput.trim() !== "WIPE") return;
+    wipeBusy = true;
+    wipeMsg = null;
+    try {
+      const summary = await wipeDatabase("WIPE");
+      wipeMsg = wipeSummary(summary);
+      wipeConfirmInput = "";
+      wipeOpen = false;
+      await reload();
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      wipeBusy = false;
     }
   }
 </script>
@@ -524,6 +560,95 @@
           style="color: var(--tr-green-dim); background: var(--tr-green-bg);"
         >
           {backupMsg}
+        </div>
+      {/if}
+    </Card>
+
+    <!-- Gefahrenzone: irreversibler Komplett-Wipe. Bewusst rot eingefaerbt
+         und mit Pflicht-Eingabe "WIPE" gegen versehentliches Ausloesen. -->
+    <Card>
+      <div
+        class="flex items-center gap-2 border-b px-5 py-3"
+        style="border-color: var(--tr-red); background: var(--tr-red-bg);"
+      >
+        <TriangleAlertIcon class="size-5" style="color: var(--tr-red);" />
+        <div>
+          <h3 class="text-sm font-semibold" style="color: var(--tr-red);">
+            Gefahrenzone
+          </h3>
+          <p class="text-xs" style="color: var(--tr-red-dim, var(--tr-red));">
+            Alle Daten dieser App unwiderruflich löschen. Nutze vorher
+            „Backup exportieren".
+          </p>
+        </div>
+      </div>
+
+      {#if !wipeOpen}
+        <div class="px-5 py-5">
+          <button
+            type="button"
+            class="inline-flex h-9 items-center gap-2 rounded-md px-3 text-sm font-medium transition-colors hover:opacity-90"
+            style="background: var(--tr-red); color: white;"
+            onclick={() => {
+              wipeOpen = true;
+              wipeConfirmInput = "";
+              wipeMsg = null;
+            }}
+          >
+            <Trash2Icon class="size-4" />
+            Datenbank komplett löschen…
+          </button>
+        </div>
+      {:else}
+        <div class="space-y-3 px-5 py-5">
+          <p class="text-sm">
+            Du bist dabei <strong>ALLE</strong> Tageserfassungen, Auszahlungen,
+            Ausgaben, Anlagen, Verlaufstabellen und Einstellungen zu löschen.
+            <strong>Diese Aktion kann nicht rückgängig gemacht werden.</strong>
+          </p>
+          <p class="text-sm">
+            Tippe <code class="rounded px-1.5 py-0.5 font-mono text-xs"
+              style="background: var(--tr-red-bg); color: var(--tr-red);">WIPE</code>
+            ins Feld unten, um den Button freizuschalten:
+          </p>
+          <Input
+            bind:value={wipeConfirmInput}
+            placeholder="WIPE"
+            autocomplete="off"
+            spellcheck={false}
+            class="font-mono"
+          />
+          <div class="flex flex-wrap items-center gap-2 pt-1">
+            <button
+              type="button"
+              class="inline-flex h-9 items-center gap-2 rounded-md px-3 text-sm font-medium transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+              style="background: var(--tr-red); color: white;"
+              disabled={wipeBusy || wipeConfirmInput.trim() !== "WIPE"}
+              onclick={doWipe}
+            >
+              <Trash2Icon class="size-4" />
+              {wipeBusy ? "Lösche…" : "Jetzt alles löschen"}
+            </button>
+            <Button
+              variant="ghost"
+              onclick={() => {
+                wipeOpen = false;
+                wipeConfirmInput = "";
+              }}
+              disabled={wipeBusy}
+            >
+              Abbrechen
+            </Button>
+          </div>
+        </div>
+      {/if}
+
+      {#if wipeMsg}
+        <div
+          class="border-t px-5 py-2 text-sm"
+          style="color: var(--tr-red); background: var(--tr-red-bg); border-color: var(--tr-red);"
+        >
+          {wipeMsg}
         </div>
       {/if}
     </Card>

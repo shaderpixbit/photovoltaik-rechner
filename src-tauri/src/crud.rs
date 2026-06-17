@@ -7,7 +7,9 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use tauri::{command, State};
 
-use crate::db::{get_cents, get_cents_opt, get_setting, get_setting_f64, set_setting, DbState};
+use crate::db::{
+    get_cents, get_cents_opt, get_setting, get_setting_f64, seed_defaults, set_setting, DbState,
+};
 use crate::types::{Asset, DailyProduction, Expense, Payout, Settings};
 use crate::verlauf::{
     load_betreiber_perioden, load_perioden, load_stromtarif_perioden, load_verguetung_perioden,
@@ -382,6 +384,82 @@ pub fn delete_asset(state: State<DbState>, id: i64) -> Result<(), String> {
     db.execute("DELETE FROM assets WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// ── DB-Wipe ─────────────────────────────────────────────────────────────────
+
+/// Zaehlt alle Datensaetze pro Tabelle nach dem Wipe (sollte 0 sein) und
+/// gibt eine kurze Zusammenfassung zurueck — fuer den Toast in der UI.
+#[derive(serde::Serialize)]
+pub struct WipeSummary {
+    pub deleted_daily: i64,
+    pub deleted_payouts: i64,
+    pub deleted_expenses: i64,
+    pub deleted_assets: i64,
+    pub deleted_verlauf_eintraege: i64,
+}
+
+/// Loescht ALLE Nutzdaten aus der DB. Schema bleibt erhalten (`CREATE TABLE`
+/// laeuft beim naechsten App-Start nicht erneut, Spalten/Indizes bleiben).
+/// Settings + Verlaufstabellen werden via `seed_defaults` neu initialisiert,
+/// damit die App nicht in einen inkonsistenten Zustand laeuft.
+///
+/// Achtung: irreversibel. Ein `confirmation_token = "WIPE"` ist erforderlich,
+/// damit nicht versehentlich ueber JS-Konsole oder Bug ausgeloest werden kann.
+#[command]
+pub fn wipe_database(
+    state: State<DbState>,
+    confirmation_token: String,
+) -> Result<WipeSummary, String> {
+    if confirmation_token != "WIPE" {
+        return Err(
+            "Ungueltiges Confirmation-Token. Erwartet: 'WIPE' (uppercase).".into(),
+        );
+    }
+    let mut db = state.0.lock().map_err(|e| e.to_string())?;
+
+    // Counts vorher merken — fuer den UI-Toast.
+    let count = |conn: &Connection, table: &str| -> i64 {
+        conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap_or(0)
+    };
+    let before_daily = count(&db, "daily_production");
+    let before_payouts = count(&db, "payouts");
+    let before_expenses = count(&db, "expenses");
+    let before_assets = count(&db, "assets");
+    let before_verlauf = count(&db, "ust_perioden")
+        + count(&db, "betreiber_perioden")
+        + count(&db, "verguetung_perioden")
+        + count(&db, "stromtarif_perioden");
+
+    // Alles in einer Transaktion loeschen.
+    let tx = db.transaction().map_err(|e| e.to_string())?;
+    for table in [
+        "daily_production",
+        "payouts",
+        "expenses",
+        "assets",
+        "ust_perioden",
+        "betreiber_perioden",
+        "verguetung_perioden",
+        "stromtarif_perioden",
+        "settings",
+    ] {
+        tx.execute(&format!("DELETE FROM {table}"), [])
+            .map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+
+    // Defaults wieder anlegen, damit get_settings() etc. nicht failen.
+    seed_defaults(&db).map_err(|e| e.to_string())?;
+
+    Ok(WipeSummary {
+        deleted_daily: before_daily,
+        deleted_payouts: before_payouts,
+        deleted_expenses: before_expenses,
+        deleted_assets: before_assets,
+        deleted_verlauf_eintraege: before_verlauf,
+    })
 }
 
 // ── Settings ────────────────────────────────────────────────────────────────
