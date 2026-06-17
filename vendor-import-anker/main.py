@@ -3,36 +3,25 @@
 
 Liest Login-Daten aus ENV (ANKER_EMAIL, ANKER_PASSWORD, ANKER_COUNTRY),
 holt fuer den Zeitraum [--von, --bis] (ISO YYYY-MM-DD) die Energie-Tageswerte
-ueber die inoffizielle Anker-Solix-Cloud-API und schreibt eine JSON-Antwort
+ueber die inoffizielle Anker-Solix-Cloud-API und streamed sie als NDJSON
 auf stdout. Fehler gehen auf stderr und exit code != 0.
 
-Strategie: pro Tag zwei `energy_analysis(rangeType="day", startDay=endDay=tag)`
-Calls — einer mit `devType="solar_production"` fuer Erzeugung/Einspeisung,
-einer mit `devType="grid"` fuer Netzbezug. Anker liefert nur bei
-single-day-Range alle `*_total`-Felder als Tageswerte (Multi-Day-Ranges
-geben aggregierte Summen, nicht Tagessummen).
+Streaming-Protokoll (eine JSON-Zeile pro Event auf stdout):
+    {"kind": "site", "site_id": "abc-123"}
+    {"kind": "row", "date": "2026-06-01", "erzeugung_kwh": 24.5, ...}
+    {"kind": "skip", "date": "2026-06-02", "reason": "keine Solar-Daten"}
+    ...
+    {"kind": "summary", "warnings": [...]}
 
-Performance: 2 Calls × ca. 0.4s sleep + ca. 0.2s HTTP = ~1s/Tag. Ein Jahr
-~6 Min. Wer schneller will: `device_pv_energy_daily` der Lib probieren,
-oder parallel mit asyncio.Semaphore — beides nicht-trivial wegen
-Rate-Limits.
+Rust liest stdout zeilenweise und committed alle N Zeilen (BATCH_SIZE=30)
+in einer DB-Transaktion. Vorteil: bei Crash mid-stream sind die bisher
+geholten Tage persistiert; User kann den Import resumen.
 
-NDJSON-Progress auf stderr nach jedem Tag, Rust forwarded als
-`anker-import-progress`-Tauri-Event an die UI.
+NDJSON-Progress auf stderr ist unabhaengig — wird als Tauri-Event an die UI
+gepusht ohne die DB anzufassen.
 
-Ausgabe-Schema (stdout, eine Zeile JSON):
-    {
-      "rows": [
-        { "date": "2026-06-01",
-          "erzeugung_kwh": 24.5,
-          "eigenverbrauch_kwh": 8.2,
-          "einspeisung_kwh": 16.3,
-          "netzbezug_kwh": 2.1 },
-        ...
-      ],
-      "site_id": "abc-123",
-      "warnings": []
-    }
+Performance: 2 Anker-Calls × ca. 0.4s sleep + ca. 0.2s HTTP = ~1s/Tag.
+Ein Jahr ~6 Min.
 
 Abhaengigkeit: `anker-solix-api` direkt aus GitHub (v3.6.3), siehe
 requirements.txt. Auf PyPI nicht veroeffentlicht.
@@ -155,6 +144,11 @@ def _progress(msg: str, done: int = 0, total: int = 0) -> None:
     )
 
 
+def _emit(payload: dict) -> None:
+    """Eine NDJSON-Zeile auf stdout, sofort geflusht (Rust streamed mit)."""
+    print(json.dumps(payload, ensure_ascii=False), flush=True)
+
+
 async def _energy_for_day(
     api: AnkerSolixApi,
     site_id: str,
@@ -189,17 +183,22 @@ async def _collect(
     country: str,
     von: date,
     bis: date,
-) -> dict[str, Any]:
+) -> None:
+    """Streamed pro Tag eine NDJSON-Zeile auf stdout. Kein Return-Wert —
+    Rust liest den Stream und committed in Batches.
+    """
     warnings: list[str] = []
     days = _daterange(von, bis)
     total_calls = len(days) * 2
     done_calls = 0
+    imported_count = 0
 
     async with ClientSession() as session:
         api = AnkerSolixApi(email, password, country, session, logging.getLogger("anker"))
         _progress(f"Login Anker-Cloud ({email[:3]}***)", 0, total_calls)
         await api.update_sites()
         site_id, _site = _pick_first_site(api.sites)
+        _emit({"kind": "site", "site_id": site_id})
         _progress(
             f"Anlage gefunden — {len(days)} Tage ({total_calls} Calls)",
             0,
@@ -207,7 +206,6 @@ async def _collect(
         )
 
         today = date.today()
-        result_rows: list[dict[str, Any]] = []
         for idx, d in enumerate(days, start=1):
             iso = d.isoformat()
 
@@ -216,6 +214,7 @@ async def _collect(
             # warum bei Monat=Juli minutenlang nichts passiert.
             if d > today:
                 done_calls += 2
+                _emit({"kind": "skip", "date": iso, "reason": "in der Zukunft"})
                 warnings.append(f"{iso}: in der Zukunft — kein API-Call.")
                 _progress(
                     f"Tag {idx}/{len(days)} ({iso}): Zukunft, uebersprungen",
@@ -256,8 +255,6 @@ async def _collect(
             erz = _first_power_value(sol) or _kwh(
                 sol.get("solar_total"), sol_t_unit
             )
-            # devType="grid": power[0].value = solar_to_grid (negativ),
-            # charge_trend[0].value = grid_to_home
             ein = _first_power_value(grid) or _kwh(
                 grid.get("solar_to_grid_total") or sol.get("solar_to_grid_total"),
                 grid_t_unit or sol_t_unit,
@@ -268,11 +265,10 @@ async def _collect(
             ev_from_api = _kwh(sol.get("solar_to_home_total"), sol_t_unit)
 
             # erzeugung = 0 heisst: Anker hat keinen Solar-Datensatz fuer
-            # diesen Tag geliefert (Future-Tag, Lueckendaten, oder System-
-            # Ausfall). Niemals einen Row mit erz=0 emittieren — sonst
-            # ueberschreibt die UPSERT bestehende, manuell oder via frueheren
-            # Import gepflegte Werte.
+            # diesen Tag geliefert. Skip-Zeile emittieren — Rust schreibt
+            # NICHT in die DB.
             if erz <= 0:
+                _emit({"kind": "skip", "date": iso, "reason": "keine Solar-Daten (erz=0)"})
                 warnings.append(
                     f"{iso}: keine Solar-Daten von Anker (erzeugung=0) — "
                     "Tag uebersprungen, bestehende Werte bleiben unveraendert."
@@ -284,11 +280,11 @@ async def _collect(
                 )
                 continue
 
-            # Eigenverbrauch primaer aus API, fallback Erzeugung - Einspeisung.
             ev = ev_from_api if ev_from_api > 0 else max(0.0, erz - ein)
 
-            result_rows.append(
+            _emit(
                 {
+                    "kind": "row",
                     "date": iso,
                     "erzeugung_kwh": round(erz, 3),
                     "eigenverbrauch_kwh": round(ev, 3),
@@ -296,20 +292,17 @@ async def _collect(
                     "netzbezug_kwh": round(net, 3),
                 }
             )
+            imported_count += 1
             _progress(
                 f"Tag {idx}/{len(days)} ({iso}): {erz:.1f} kWh",
                 done_calls,
                 total_calls,
             )
 
+        _emit({"kind": "summary", "warnings": warnings})
         _progress(
-            f"Fertig: {len(result_rows)} Tage importiert", total_calls, total_calls
+            f"Fertig: {imported_count} Tage", total_calls, total_calls
         )
-        return {
-            "rows": result_rows,
-            "site_id": site_id,
-            "warnings": warnings,
-        }
 
 
 def main() -> int:
@@ -341,13 +334,11 @@ def main() -> int:
         return 2
 
     try:
-        result = asyncio.run(_collect(email, password, country, von, bis))
+        asyncio.run(_collect(email, password, country, von, bis))
     except Exception as exc:  # noqa: BLE001 — Sidecar muss alle Fehler serialisieren
         print(json.dumps({"error": f"{type(exc).__name__}: {exc}"}), file=sys.stderr)
         return 1
 
-    json.dump(result, sys.stdout, ensure_ascii=False)
-    sys.stdout.write("\n")
     return 0
 
 

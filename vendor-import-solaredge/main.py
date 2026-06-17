@@ -25,12 +25,12 @@ Endpoints (siehe SolarEdge Monitoring API Dok):
 Rate-Limit: 300 Requests / Tag / API-Key (lt. SolarEdge Doku). Wir
 brauchen 2 Calls pro Import, also kein Problem.
 
-Ausgabe-Schema (stdout, eine Zeile JSON) — identisch zum anker-Sidecar:
-    {
-      "rows": [{ "date": ..., "erzeugung_kwh": ..., ... }],
-      "site_id": "...",
-      "warnings": []
-    }
+Streaming-Protokoll (eine JSON-Zeile pro Event auf stdout — identisch zum
+anker-Sidecar, damit Rust mit beiden gleich umgeht):
+    {"kind": "site", "site_id": "..."}
+    {"kind": "row", "date": "...", "erzeugung_kwh": ..., ...}
+    {"kind": "skip", "date": "...", "reason": "..."}
+    {"kind": "summary", "warnings": [...]}
 NDJSON-Progress auf stderr (Rust forwarded als Tauri-Event).
 """
 
@@ -61,6 +61,10 @@ def _progress(msg: str, done: int = 0, total: int = 0) -> None:
         file=sys.stderr,
         flush=True,
     )
+
+
+def _emit(payload: dict) -> None:
+    print(json.dumps(payload, ensure_ascii=False), flush=True)
 
 
 def _get_json(url: str) -> dict[str, Any]:
@@ -115,11 +119,16 @@ def _index_values(values: list[Any], unit: str | None) -> dict[str, float]:
     return out
 
 
-def _collect(api_key: str, site_id: str, von: date, bis: date) -> dict[str, Any]:
+def _collect(api_key: str, site_id: str, von: date, bis: date) -> None:
+    """Streamed NDJSON auf stdout. SolarEdge holt alle Daten in 2 Calls,
+    Rows werden danach in einem Burst emittiert — Rust batched sie genauso
+    wie beim Anker-Streaming.
+    """
     warnings: list[str] = []
-    # SolarEdge energyDetails braucht Zeit im Format YYYY-MM-DD%20HH:MM:SS.
     start_time = von.strftime("%Y-%m-%d") + " 00:00:00"
     end_time = bis.strftime("%Y-%m-%d") + " 23:59:59"
+
+    _emit({"kind": "site", "site_id": site_id})
 
     _progress("SolarEdge: Erzeugung abrufen", 0, 2)
     energy_url = (
@@ -152,8 +161,6 @@ def _collect(api_key: str, site_id: str, von: date, bis: date) -> dict[str, Any]
     try:
         details = _get_json(details_url).get("energyDetails") or {}
     except RuntimeError as exc:
-        # Wenn kein Smart Meter installiert ist, gibt SolarEdge 400/403.
-        # Dann nur Erzeugung importieren, Rest leer.
         warnings.append(
             f"energyDetails nicht verfuegbar ({exc}). Eigenverbrauch / "
             "Einspeisung / Netzbezug bleiben 0 — vermutlich kein Smart Meter."
@@ -176,12 +183,13 @@ def _collect(api_key: str, site_id: str, von: date, bis: date) -> dict[str, Any]
         elif m_type == "SELFCONSUMPTION":
             selfcons_by_day = idx
 
-    rows: list[dict[str, Any]] = []
+    imported = 0
     for d_str in sorted(erz_by_day.keys()):
         if d_str < von.isoformat() or d_str > bis.isoformat():
             continue
         erz = erz_by_day.get(d_str, 0.0)
         if erz <= 0:
+            _emit({"kind": "skip", "date": d_str, "reason": "keine Solar-Daten (erz=0)"})
             warnings.append(
                 f"{d_str}: keine Solar-Daten — Tag uebersprungen, "
                 "bestehende Werte bleiben unveraendert."
@@ -192,8 +200,9 @@ def _collect(api_key: str, site_id: str, von: date, bis: date) -> dict[str, Any]
         ev = selfcons_by_day.get(d_str)
         if not ev or ev <= 0:
             ev = max(0.0, erz - ein)
-        rows.append(
+        _emit(
             {
+                "kind": "row",
                 "date": d_str,
                 "erzeugung_kwh": round(erz, 3),
                 "eigenverbrauch_kwh": round(ev, 3),
@@ -201,9 +210,10 @@ def _collect(api_key: str, site_id: str, von: date, bis: date) -> dict[str, Any]
                 "netzbezug_kwh": round(net, 3),
             }
         )
+        imported += 1
 
-    _progress(f"Fertig: {len(rows)} Tage", 2, 2)
-    return {"rows": rows, "site_id": site_id, "warnings": warnings}
+    _emit({"kind": "summary", "warnings": warnings})
+    _progress(f"Fertig: {imported} Tage", 2, 2)
 
 
 def main() -> int:
@@ -236,13 +246,11 @@ def main() -> int:
         return 2
 
     try:
-        result = _collect(api_key, site_id, von, bis)
+        _collect(api_key, site_id, von, bis)
     except Exception as exc:  # noqa: BLE001
         print(json.dumps({"error": f"{type(exc).__name__}: {exc}"}), file=sys.stderr)
         return 1
 
-    json.dump(result, sys.stdout, ensure_ascii=False)
-    sys.stdout.write("\n")
     return 0
 
 

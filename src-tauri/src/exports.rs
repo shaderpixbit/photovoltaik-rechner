@@ -5,7 +5,7 @@
 use chrono::Local;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader};
 use std::sync::{Arc, Mutex};
 use tauri::{command, AppHandle, Emitter, State};
 
@@ -644,19 +644,96 @@ struct SidecarRow {
     netzbezug_kwh: Option<f64>,
 }
 
+/// Streaming-NDJSON-Protokoll: jede Zeile auf stdout ist ein typed Event.
+/// `kind`-Discriminator entscheidet wie Rust die Zeile verarbeitet.
 #[derive(Deserialize)]
-struct SidecarOutput {
-    #[serde(default)]
-    rows: Vec<SidecarRow>,
-    #[serde(default)]
-    site_id: Option<String>,
-    #[serde(default)]
-    warnings: Vec<String>,
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum SidecarLine {
+    /// Anlagen-ID — kommt einmal vom Sidecar nach dem Login.
+    Site { site_id: String },
+    /// Ein Tages-Datensatz — Rust batched und committed.
+    Row(SidecarRow),
+    /// Tag uebersprungen (kein Insert) — z.B. erzeugung=0 oder Zukunft.
+    Skip {
+        #[allow(dead_code)]
+        date: String,
+        #[allow(dead_code)]
+        reason: String,
+    },
+    /// Letzte Zeile mit gesammelten Warnungen.
+    Summary {
+        #[serde(default)]
+        warnings: Vec<String>,
+    },
 }
 
 #[derive(Deserialize)]
 struct SidecarError {
     error: String,
+}
+
+/// Wieviele Rows in eine Transaktion. Bei Crash mid-stream sind die
+/// vorherigen Batches sicher in der DB.
+const COMMIT_BATCH_SIZE: usize = 30;
+
+/// UPSERT eines Batches. Plausi-Checks pro Row, akkumuliert Stats.
+fn commit_batch(
+    state: &State<DbState>,
+    batch: &mut Vec<SidecarRow>,
+    imported: &mut i64,
+    skipped: &mut i64,
+    errors: &mut Vec<String>,
+) -> Result<(), String> {
+    if batch.is_empty() {
+        return Ok(());
+    }
+    let mut db = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = db.transaction().map_err(|e| e.to_string())?;
+    for row in batch.iter() {
+        if row.erzeugung_kwh <= 0.0 {
+            *skipped += 1;
+            errors.push(format!(
+                "{}: erzeugung=0 — Schreib-Schutz aktiv, Tag uebersprungen.",
+                row.date
+            ));
+            continue;
+        }
+        if row.einspeisung_kwh > row.erzeugung_kwh + 0.5 {
+            *skipped += 1;
+            errors.push(format!(
+                "{}: Einspeisung ({:.2}) > Erzeugung ({:.2}) — uebersprungen.",
+                row.date, row.einspeisung_kwh, row.erzeugung_kwh
+            ));
+            continue;
+        }
+        let res = tx.execute(
+            "INSERT INTO daily_production
+                (date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh, notiz)
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL)
+             ON CONFLICT(date) DO UPDATE SET
+                erzeugung_kwh = excluded.erzeugung_kwh,
+                eigenverbrauch_kwh = excluded.eigenverbrauch_kwh,
+                einspeisung_kwh = excluded.einspeisung_kwh,
+                netzbezug_kwh = excluded.netzbezug_kwh",
+            params![
+                row.date,
+                row.erzeugung_kwh,
+                row.eigenverbrauch_kwh,
+                row.einspeisung_kwh,
+                row.netzbezug_kwh,
+            ],
+        );
+        match res {
+            Ok(_) => *imported += 1,
+            Err(e) => {
+                *skipped += 1;
+                errors.push(format!("{}: {}", row.date, e));
+            }
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    batch.clear();
+    Ok(())
 }
 
 /// Beschreibt einen Vendor-Sidecar fuer den `resolve_sidecar`-Lookup.
@@ -859,16 +936,53 @@ pub fn import_from_vendor(
         }
     });
 
-    // Stdout parallel lesen — beide Pipes muessen gedrained werden, sonst
-    // deadlockt der Child-Prozess wenn ein Buffer voll laeuft.
-    let mut stdout_buf = String::new();
-    let mut stdout = child
+    // Stdout streamend lesen: NDJSON Zeile fuer Zeile. Rows in Batches von
+    // COMMIT_BATCH_SIZE committen, damit ein Crash mid-stream die bisherigen
+    // Batches NICHT verliert (kann bei laufendem Anker-Import 5+ Min
+    // wertvolle Daten retten).
+    let stdout = child
         .stdout
         .take()
         .ok_or_else(|| "Sidecar hat keinen stdout-Pipe".to_string())?;
-    stdout
-        .read_to_string(&mut stdout_buf)
-        .map_err(|e| format!("Sidecar-Stdout lesen: {e}"))?;
+    let stdout_reader = BufReader::new(stdout);
+
+    let mut site_id: Option<String> = None;
+    let mut warnings: Vec<String> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+    let mut imported: i64 = 0;
+    let mut skipped: i64 = 0;
+    let mut batch: Vec<SidecarRow> = Vec::with_capacity(COMMIT_BATCH_SIZE);
+
+    for line in stdout_reader.lines().map_while(Result::ok) {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<SidecarLine>(line) {
+            Ok(SidecarLine::Site { site_id: id }) => {
+                site_id = Some(id);
+            }
+            Ok(SidecarLine::Row(row)) => {
+                batch.push(row);
+                if batch.len() >= COMMIT_BATCH_SIZE {
+                    commit_batch(&state, &mut batch, &mut imported, &mut skipped, &mut errors)?;
+                }
+            }
+            Ok(SidecarLine::Skip { date, reason }) => {
+                skipped += 1;
+                warnings.push(format!("{date}: {reason}"));
+            }
+            Ok(SidecarLine::Summary { warnings: w }) => {
+                warnings.extend(w);
+            }
+            Err(e) => {
+                errors.push(format!("Sidecar-Zeile nicht parsbar: {e}. Inhalt: {line}"));
+            }
+        }
+    }
+
+    // Finalen Batch committen, dann auf Sidecar-Exit warten.
+    commit_batch(&state, &mut batch, &mut imported, &mut skipped, &mut errors)?;
 
     let status = child
         .wait()
@@ -878,83 +992,30 @@ pub fn import_from_vendor(
 
     if !status.success() {
         // Sidecar serialisiert Fehler als JSON {"error": "..."} auf stderr.
-        if let Ok(parsed) = serde_json::from_str::<SidecarError>(stderr_content.trim()) {
-            return Err(parsed.error);
+        // Wenn wir aber schon Batches committed haben, bringen wir den
+        // ImportResult mit der teilweisen Bilanz zurueck — die DB ist
+        // konsistent, der User soll wissen was rein kam, bevor das Sidecar
+        // umfiel.
+        let sidecar_err = serde_json::from_str::<SidecarError>(stderr_content.trim())
+            .map(|p| p.error)
+            .unwrap_or_else(|_| {
+                format!(
+                    "Sidecar Exit-Code {:?}: {}",
+                    status.code(),
+                    stderr_content.trim()
+                )
+            });
+        if imported == 0 {
+            return Err(sidecar_err);
         }
-        return Err(format!(
-            "Sidecar Exit-Code {:?}: {}",
-            status.code(),
-            stderr_content.trim()
-        ));
+        warnings.push(format!("Sidecar abgebrochen: {sidecar_err}"));
     }
-
-    let parsed: SidecarOutput = serde_json::from_str(stdout_buf.trim()).map_err(|e| {
-        format!(
-            "Sidecar-Ausgabe nicht parsbar: {e}. Stdout: {}",
-            stdout_buf.trim()
-        )
-    })?;
-
-    // UPSERT in einer Transaktion. Bestehende Eintraege werden ueberschrieben
-    // (Anker liefert taegliche Aggregate — Re-Imports sollen idempotent sein).
-    let mut db = state.0.lock().map_err(|e| e.to_string())?;
-    let tx = db.transaction().map_err(|e| e.to_string())?;
-    let mut imported: i64 = 0;
-    let mut skipped: i64 = 0;
-    let mut errors: Vec<String> = Vec::new();
-    for row in &parsed.rows {
-        // Zweite Sicherung gegen Daten-Verlust: nie eine Zeile mit
-        // erzeugung=0 schreiben — das wuerde existierende Werte ueberschreiben.
-        // (Der Sidecar sollte solche Rows schon vorher rauswerfen.)
-        if row.erzeugung_kwh <= 0.0 {
-            skipped += 1;
-            errors.push(format!(
-                "{}: erzeugung=0 — Schreib-Schutz aktiv, Tag uebersprungen.",
-                row.date
-            ));
-            continue;
-        }
-        // Plausibilitaet: Einspeisung > Erzeugung waere widerspruechlich — dann skippen.
-        if row.einspeisung_kwh > row.erzeugung_kwh + 0.5 {
-            skipped += 1;
-            errors.push(format!(
-                "{}: Einspeisung ({:.2}) > Erzeugung ({:.2}) — uebersprungen.",
-                row.date, row.einspeisung_kwh, row.erzeugung_kwh
-            ));
-            continue;
-        }
-        let res = tx.execute(
-            "INSERT INTO daily_production
-                (date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh, notiz)
-             VALUES (?1, ?2, ?3, ?4, ?5, NULL)
-             ON CONFLICT(date) DO UPDATE SET
-                erzeugung_kwh = excluded.erzeugung_kwh,
-                eigenverbrauch_kwh = excluded.eigenverbrauch_kwh,
-                einspeisung_kwh = excluded.einspeisung_kwh,
-                netzbezug_kwh = excluded.netzbezug_kwh",
-            params![
-                row.date,
-                row.erzeugung_kwh,
-                row.eigenverbrauch_kwh,
-                row.einspeisung_kwh,
-                row.netzbezug_kwh,
-            ],
-        );
-        match res {
-            Ok(_) => imported += 1,
-            Err(e) => {
-                skipped += 1;
-                errors.push(format!("{}: {}", row.date, e));
-            }
-        }
-    }
-    tx.commit().map_err(|e| e.to_string())?;
 
     Ok(ImportResult {
         imported,
         skipped,
         errors,
-        warnings: parsed.warnings,
-        site_id: parsed.site_id,
+        warnings,
+        site_id,
     })
 }
