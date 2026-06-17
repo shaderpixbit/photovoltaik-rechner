@@ -365,17 +365,31 @@
     await tick();
     // Live-Updates vom Sidecar abonnieren BEVOR die invoke laeuft — sonst
     // koennten frueh emittierte Events verloren gehen.
+    // Throttle Banner-Updates auf max. 8/s — Sidecar emittiert pro Tag
+    // ~3 Events, was bei Monat-Imports 90+ Events in 30s waeren. Ohne
+    // Throttle wird der DevTools-Logger und Svelte-Reactivity geflutet
+    // (User-Report: Konsole fuehlt sich eingefroren an).
+    let pendingPayload: { progress: string; done: number; total: number } | null = null;
+    let flushScheduled = false;
+    const flushPending = () => {
+      flushScheduled = false;
+      if (pendingPayload) {
+        importProgressMsg = pendingPayload.progress;
+        importProgressDone = pendingPayload.done;
+        importProgressTotal = pendingPayload.total;
+        pendingPayload = null;
+      }
+    };
     unlistenProgress = await listen<{
       progress: string;
       done: number;
       total: number;
     }>("anker-import-progress", (e) => {
-      // console.log laesst sich in DevTools (F12 in dev) live mitlesen —
-      // wenn hier nichts erscheint, kommt das Event nicht vom Rust an.
-      console.debug("[anker-import-progress]", e.payload);
-      importProgressMsg = e.payload.progress;
-      importProgressDone = e.payload.done;
-      importProgressTotal = e.payload.total;
+      pendingPayload = e.payload;
+      if (!flushScheduled) {
+        flushScheduled = true;
+        setTimeout(flushPending, 125);
+      }
     });
     try {
       const res = await importFromVendor(r.from, r.to);
