@@ -136,12 +136,16 @@ def _index_by_day(items: list[Any], unit: str | None) -> dict[str, float]:
     return out
 
 
-def _progress(msg: str) -> None:
-    """Best-effort Progress auf stderr (ein Zeile pro Event). Rust kann
-    optional darauf hoeren und an die UI weiterreichen; failt es nicht,
-    kostet es nur ein paar Bytes.
+def _progress(msg: str, done: int = 0, total: int = 0) -> None:
+    """Progress-Event auf stderr (eine NDJSON-Zeile pro Event). Rust liest
+    den Stream zeilenweise mit und emittiert pro Zeile ein Tauri-Event
+    `anker-import-progress` an die UI.
     """
-    print(json.dumps({"progress": msg}), file=sys.stderr, flush=True)
+    print(
+        json.dumps({"progress": msg, "done": done, "total": total}),
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 async def _collect(
@@ -158,10 +162,14 @@ async def _collect(
 
     async with ClientSession() as session:
         api = AnkerSolixApi(email, password, country, session, logging.getLogger("anker"))
-        _progress(f"Login Anker-Cloud ({email[:3]}***)")
+        _progress(f"Login Anker-Cloud ({email[:3]}***)", 0, total_calls)
         await api.update_sites()
         site_id, _site = _pick_first_site(api.sites)
-        _progress(f"Anlage: {site_id} — {len(chunks)} Wochen-Chunks ({total_calls} Calls)")
+        _progress(
+            f"Anlage gefunden — {len(chunks)} Wochen-Chunks ({total_calls} Calls)",
+            0,
+            total_calls,
+        )
 
         # Pro Chunk zwei Calls — solar_production + grid. Mit rangeType="week"
         # liefert Anker daily values im `power[]` Array fuer den ganzen Chunk.
@@ -186,7 +194,11 @@ async def _collect(
                 )
                 sol = {}
             done_calls += 1
-            _progress(f"Chunk {idx}/{len(chunks)}: solar_production OK ({done_calls}/{total_calls})")
+            _progress(
+                f"Chunk {idx}/{len(chunks)}: Erzeugung OK",
+                done_calls,
+                total_calls,
+            )
             await asyncio.sleep(_CALL_DELAY_S)
 
             try:
@@ -205,7 +217,11 @@ async def _collect(
                 )
                 grid = {}
             done_calls += 1
-            _progress(f"Chunk {idx}/{len(chunks)}: grid OK ({done_calls}/{total_calls})")
+            _progress(
+                f"Chunk {idx}/{len(chunks)}: Einspeisung/Netzbezug OK",
+                done_calls,
+                total_calls,
+            )
             await asyncio.sleep(_CALL_DELAY_S)
 
             if isinstance(sol, dict):
@@ -231,8 +247,17 @@ async def _collect(
             erz = per_day_erz.get(iso, 0.0)
             ein = per_day_ein.get(iso, 0.0)
             net = per_day_net.get(iso, 0.0)
-            if erz <= 0 and ein <= 0 and net <= 0:
-                warnings.append(f"{iso}: alle Werte 0 — vermutlich kein Datensatz.")
+            # erzeugung = 0 heisst: Anker hat keinen Solar-Datensatz fuer
+            # diesen Tag geliefert (Future-Tag, Lueckendaten, oder System-
+            # Ausfall). Niemals einen Row mit erz=0 emittieren — sonst
+            # ueberschreibt die UPSERT bestehende, manuell oder via frueheren
+            # Import gepflegte Werte. Nutzer kann bewusste 0-Tage manuell
+            # erfassen.
+            if erz <= 0:
+                warnings.append(
+                    f"{iso}: keine Solar-Daten von Anker — Tag uebersprungen "
+                    "(bestehende Werte bleiben unveraendert)."
+                )
                 cur += timedelta(days=1)
                 continue
             # Eigenverbrauch = Erzeugung - Einspeisung (auf Tages-Ebene fuer
@@ -250,7 +275,9 @@ async def _collect(
             )
             cur += timedelta(days=1)
 
-        _progress(f"Fertig: {len(result_rows)} Tage")
+        _progress(
+            f"Fertig: {len(result_rows)} Tage", total_calls, total_calls
+        )
         return {
             "rows": result_rows,
             "site_id": site_id,

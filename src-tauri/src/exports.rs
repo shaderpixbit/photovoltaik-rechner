@@ -5,7 +5,9 @@
 use chrono::Local;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
-use tauri::{command, State};
+use std::io::{BufRead, BufReader, Read};
+use std::sync::{Arc, Mutex};
+use tauri::{command, AppHandle, Emitter, State};
 
 use crate::crud::list_assets_internal;
 use crate::db::{get_cents, get_setting, get_setting_f64, DbState};
@@ -697,6 +699,7 @@ fn resolve_sidecar() -> Result<std::process::Command, String> {
 
 #[command]
 pub fn import_from_vendor(
+    app: AppHandle,
     state: State<DbState>,
     von: String,
     bis: String,
@@ -737,28 +740,71 @@ pub fn import_from_vendor(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 
-    let output = cmd
-        .output()
+    let mut child = cmd
+        .spawn()
         .map_err(|e| format!("Sidecar-Start fehlgeschlagen: {e}"))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    // Stderr im Hintergrund-Thread lesen: NDJSON-Zeilen mit "progress"-Key
+    // werden als Tauri-Event `anker-import-progress` an die UI gepusht;
+    // alle anderen Zeilen (insb. das finale `{"error": "..."}`) sammeln wir
+    // fuer das Error-Reporting nach dem Prozess-Exit.
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "Sidecar hat keinen stderr-Pipe".to_string())?;
+    let stderr_buf: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    let stderr_buf_thread = stderr_buf.clone();
+    let app_thread = app.clone();
+    let stderr_handle = std::thread::spawn(move || {
+        let reader = BufReader::new(stderr);
+        for line in reader.lines().map_while(Result::ok) {
+            // Try-parse als JSON; "progress" -> Event, sonst aufsammeln.
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+                if v.get("progress").is_some() {
+                    let _ = app_thread.emit("anker-import-progress", &v);
+                    continue;
+                }
+            }
+            if let Ok(mut buf) = stderr_buf_thread.lock() {
+                buf.push_str(&line);
+                buf.push('\n');
+            }
+        }
+    });
+
+    // Stdout parallel lesen — beide Pipes muessen gedrained werden, sonst
+    // deadlockt der Child-Prozess wenn ein Buffer voll laeuft.
+    let mut stdout_buf = String::new();
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Sidecar hat keinen stdout-Pipe".to_string())?;
+    stdout
+        .read_to_string(&mut stdout_buf)
+        .map_err(|e| format!("Sidecar-Stdout lesen: {e}"))?;
+
+    let status = child
+        .wait()
+        .map_err(|e| format!("Sidecar-Wait: {e}"))?;
+    let _ = stderr_handle.join();
+    let stderr_content = stderr_buf.lock().map(|s| s.clone()).unwrap_or_default();
+
+    if !status.success() {
         // Sidecar serialisiert Fehler als JSON {"error": "..."} auf stderr.
-        if let Ok(parsed) = serde_json::from_str::<SidecarError>(stderr.trim()) {
+        if let Ok(parsed) = serde_json::from_str::<SidecarError>(stderr_content.trim()) {
             return Err(parsed.error);
         }
         return Err(format!(
             "Sidecar Exit-Code {:?}: {}",
-            output.status.code(),
-            stderr.trim()
+            status.code(),
+            stderr_content.trim()
         ));
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed: SidecarOutput = serde_json::from_str(stdout.trim()).map_err(|e| {
+    let parsed: SidecarOutput = serde_json::from_str(stdout_buf.trim()).map_err(|e| {
         format!(
             "Sidecar-Ausgabe nicht parsbar: {e}. Stdout: {}",
-            stdout.trim()
+            stdout_buf.trim()
         )
     })?;
 
@@ -770,6 +816,17 @@ pub fn import_from_vendor(
     let mut skipped: i64 = 0;
     let mut errors: Vec<String> = Vec::new();
     for row in &parsed.rows {
+        // Zweite Sicherung gegen Daten-Verlust: nie eine Zeile mit
+        // erzeugung=0 schreiben — das wuerde existierende Werte ueberschreiben.
+        // (Der Sidecar sollte solche Rows schon vorher rauswerfen.)
+        if row.erzeugung_kwh <= 0.0 {
+            skipped += 1;
+            errors.push(format!(
+                "{}: erzeugung=0 — Schreib-Schutz aktiv, Tag uebersprungen.",
+                row.date
+            ));
+            continue;
+        }
         // Plausibilitaet: Einspeisung > Erzeugung waere widerspruechlich — dann skippen.
         if row.einspeisung_kwh > row.erzeugung_kwh + 0.5 {
             skipped += 1;

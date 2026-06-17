@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import {
     deleteDaily,
     getDaily,
@@ -54,6 +55,12 @@
   let importStartedAt = $state<number | null>(null);
   let importElapsedSec = $state(0);
   let importEstSec = $state(0);
+
+  // Live-Progress aus dem Python-Sidecar (via stderr -> Rust -> Tauri-Event).
+  let importProgressMsg = $state("");
+  let importProgressDone = $state(0);
+  let importProgressTotal = $state(0);
+  let unlistenProgress: UnlistenFn | null = null;
 
   $effect(() => {
     if (importStartedAt === null) {
@@ -313,6 +320,20 @@
     busy = true;
     importStartedAt = Date.now();
     importEstSec = estSec;
+    importProgressMsg = "Starte Sidecar…";
+    importProgressDone = 0;
+    importProgressTotal = 0;
+    // Live-Updates vom Sidecar abonnieren BEVOR die invoke laeuft — sonst
+    // koennten frueh emittierte Events verloren gehen.
+    unlistenProgress = await listen<{
+      progress: string;
+      done: number;
+      total: number;
+    }>("anker-import-progress", (e) => {
+      importProgressMsg = e.payload.progress;
+      importProgressDone = e.payload.done;
+      importProgressTotal = e.payload.total;
+    });
     try {
       const res = await importFromVendor(r.from, r.to);
       let msg = `${res.imported} Tage importiert in ${formatDuration(importElapsedSec)}`;
@@ -326,6 +347,10 @@
     } finally {
       busy = false;
       importStartedAt = null;
+      if (unlistenProgress) {
+        unlistenProgress();
+        unlistenProgress = null;
+      }
     }
   }
 
@@ -351,32 +376,38 @@
   </div>
 
   {#if importStartedAt !== null}
-    {@const pct = importEstSec > 0
+    {@const realPct = importProgressTotal > 0
+      ? Math.round((importProgressDone / importProgressTotal) * 100)
+      : 0}
+    {@const estPct = importEstSec > 0
       ? Math.min(99, Math.round((importElapsedSec / importEstSec) * 100))
       : 0}
+    {@const pct = importProgressTotal > 0 ? realPct : estPct}
     <Card>
       <div class="px-5 py-4">
         <div class="flex items-center justify-between text-sm">
-          <span class="font-medium">
+          <span class="inline-flex items-center gap-2 font-medium">
             <span class="inline-block size-2 animate-pulse rounded-full"
               style="background: var(--tr-sun);"></span>
-            Anker-Cloud-Import laeuft…
+            {importProgressMsg || "Anker-Cloud-Import laeuft…"}
           </span>
           <span class="font-mono text-[var(--tr-text-dim)]">
+            {#if importProgressTotal > 0}
+              {importProgressDone}/{importProgressTotal} Calls ·
+            {/if}
             {formatDuration(importElapsedSec)} / ~{formatDuration(importEstSec)}
           </span>
         </div>
         <div class="mt-2 h-1.5 w-full overflow-hidden rounded-full"
           style="background: var(--tr-surface2);">
           <div
-            class="h-full transition-all duration-500"
+            class="h-full transition-all duration-300"
             style="width: {pct}%; background: var(--tr-sun);"
           ></div>
         </div>
         <p class="mt-2 text-xs text-[var(--tr-text-faint)]">
-          Sidecar holt Tageswerte in 7-Tages-Chunks (2 Calls je Chunk, 0.4s
-          Pause wegen Anker-Rate-Limit). Lange Importe blockieren die UI nicht
-          dauerhaft — der Browser kann diese Seite normal weiterbenutzen.
+          Sidecar holt Tageswerte in 7-Tages-Chunks. Tage ohne Solar-Daten
+          werden uebersprungen — bestehende Werte werden nie auf 0 ueberschrieben.
         </p>
       </div>
     </Card>
