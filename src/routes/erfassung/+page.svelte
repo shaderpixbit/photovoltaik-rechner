@@ -303,16 +303,16 @@
       showToast("err", "Ungueltiger Zeitraum.");
       return;
     }
-    // Sidecar nutzt 7-Tages-Chunks mit 2 API-Calls + 0.4s sleep pro Chunk.
-    // Pro Chunk ~2.5s (Sleep + HTTP). Plus ~3s Login-Overhead.
+    // Per-Tag-Strategie: 2 API-Calls + 0.4s sleep pro Tag + ~0.2s HTTP
+    // = ca. 1s/Tag. Plus ~3s Login-Overhead.
     const days = periodDays().length;
-    const chunks = Math.ceil(days / 7);
-    const estSec = chunks * 2 + 3;
+    const estSec = days + 3;
     if (
       days > 31 &&
       !confirm(
-        `Import von ${days} Tagen (${r.from} bis ${r.to}) in ${chunks} ` +
-          `Wochen-Chunks — ca. ${formatDuration(estSec)} min Laufzeit. Fortfahren?`,
+        `Import von ${days} Tagen (${r.from} bis ${r.to}) — ca. ` +
+          `${formatDuration(estSec)} min Laufzeit (2 Calls/Tag wegen ` +
+          `Anker-Rate-Limit). Fortfahren?`,
       )
     ) {
       return;
@@ -344,13 +344,19 @@
       await loadForPeriod();
     } catch (e) {
       showToast("err", e instanceof Error ? e.message : String(e));
+      importProgressMsg = "Abgebrochen: " + (e instanceof Error ? e.message : String(e));
     } finally {
       busy = false;
-      importStartedAt = null;
       if (unlistenProgress) {
         unlistenProgress();
         unlistenProgress = null;
       }
+      // Card noch 2s sichtbar lassen, damit der User auch bei schnellem /
+      // fehlgeschlagenem Import den Endzustand wahrnimmt — sonst flasht der
+      // Banner zu kurz auf.
+      setTimeout(() => {
+        importStartedAt = null;
+      }, 2000);
     }
   }
 
