@@ -24,7 +24,8 @@ pub fn list_daily_range(
     let db = state.0.lock().map_err(|e| e.to_string())?;
     let mut stmt = db
         .prepare(
-            "SELECT date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh, notiz
+            "SELECT date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh,
+                    speicher_laden_kwh, speicher_entladen_kwh, notiz
              FROM daily_production
              WHERE date BETWEEN ?1 AND ?2
              ORDER BY date ASC",
@@ -38,7 +39,9 @@ pub fn list_daily_range(
                 eigenverbrauch_kwh: r.get(2)?,
                 einspeisung_kwh: r.get(3)?,
                 netzbezug_kwh: r.get(4)?,
-                notiz: r.get(5)?,
+                speicher_laden_kwh: r.get(5)?,
+                speicher_entladen_kwh: r.get(6)?,
+                notiz: r.get(7)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -54,7 +57,8 @@ pub fn get_daily(
 ) -> Result<Option<DailyProduction>, String> {
     let db = state.0.lock().map_err(|e| e.to_string())?;
     db.query_row(
-        "SELECT date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh, notiz
+        "SELECT date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh,
+                speicher_laden_kwh, speicher_entladen_kwh, notiz
          FROM daily_production WHERE date = ?1",
         params![date],
         |r| {
@@ -64,7 +68,9 @@ pub fn get_daily(
                 eigenverbrauch_kwh: r.get(2)?,
                 einspeisung_kwh: r.get(3)?,
                 netzbezug_kwh: r.get(4)?,
-                notiz: r.get(5)?,
+                speicher_laden_kwh: r.get(5)?,
+                speicher_entladen_kwh: r.get(6)?,
+                notiz: r.get(7)?,
             })
         },
     )
@@ -77,13 +83,16 @@ pub fn upsert_daily(state: State<DbState>, entry: DailyProduction) -> Result<(),
     let db = state.0.lock().map_err(|e| e.to_string())?;
     db.execute(
         "INSERT INTO daily_production
-         (date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh, notiz)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         (date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh,
+          speicher_laden_kwh, speicher_entladen_kwh, notiz)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
          ON CONFLICT(date) DO UPDATE SET
             erzeugung_kwh = excluded.erzeugung_kwh,
             eigenverbrauch_kwh = excluded.eigenverbrauch_kwh,
             einspeisung_kwh = excluded.einspeisung_kwh,
             netzbezug_kwh = excluded.netzbezug_kwh,
+            speicher_laden_kwh = excluded.speicher_laden_kwh,
+            speicher_entladen_kwh = excluded.speicher_entladen_kwh,
             notiz = excluded.notiz",
         params![
             entry.date,
@@ -91,6 +100,8 @@ pub fn upsert_daily(state: State<DbState>, entry: DailyProduction) -> Result<(),
             entry.eigenverbrauch_kwh,
             entry.einspeisung_kwh,
             entry.netzbezug_kwh,
+            entry.speicher_laden_kwh,
+            entry.speicher_entladen_kwh,
             entry.notiz
         ],
     )

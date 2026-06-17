@@ -282,6 +282,14 @@ async def _collect(
 
             ev = ev_from_api if ev_from_api > 0 else max(0.0, erz - ein)
 
+            # Speicher-Flow (speicher_laden_kwh / speicher_entladen_kwh) wird
+            # bewusst NICHT automatisch emittiert. Erste Implementierung las
+            # `charge_total`/`discharge_total` aus der solar_production-
+            # Antwort — die Werte enthalten aber Charge aus ALLEN Quellen
+            # (inkl. Grid-Charging, 3rd-Party-PV), nicht nur Solar->Akku.
+            # User hat 13.6 angezeigt bekommen statt 10.9 wie in der App.
+            # TODO: separater devType="solarbank"-Call + subtrahieren von
+            # grid_to_battery_total + third_party_pv_to_bat.
             _emit(
                 {
                     "kind": "row",

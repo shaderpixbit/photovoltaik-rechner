@@ -218,7 +218,8 @@ struct SettingsKV {
 
 fn collect_backup(conn: &Connection) -> Result<Backup, rusqlite::Error> {
     let mut stmt = conn.prepare(
-        "SELECT date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh, notiz
+        "SELECT date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh,
+                speicher_laden_kwh, speicher_entladen_kwh, notiz
          FROM daily_production ORDER BY date ASC",
     )?;
     let daily: Vec<DailyProduction> = stmt
@@ -229,7 +230,9 @@ fn collect_backup(conn: &Connection) -> Result<Backup, rusqlite::Error> {
                 eigenverbrauch_kwh: r.get(2)?,
                 einspeisung_kwh: r.get(3)?,
                 netzbezug_kwh: r.get(4)?,
-                notiz: r.get(5)?,
+                speicher_laden_kwh: r.get(5)?,
+                speicher_entladen_kwh: r.get(6)?,
+                notiz: r.get(7)?,
             })
         })?
         .filter_map(|r| r.ok())
@@ -642,6 +645,12 @@ struct SidecarRow {
     einspeisung_kwh: f64,
     #[serde(default)]
     netzbezug_kwh: Option<f64>,
+    /// Solar -> Akku — nur fuer Anlagen mit Speicher (Anker Solarbank).
+    #[serde(default)]
+    speicher_laden_kwh: Option<f64>,
+    /// Akku -> Haus.
+    #[serde(default)]
+    speicher_entladen_kwh: Option<f64>,
 }
 
 /// Streaming-NDJSON-Protokoll: jede Zeile auf stdout ist ein typed Event.
@@ -708,19 +717,26 @@ fn commit_batch(
         }
         let res = tx.execute(
             "INSERT INTO daily_production
-                (date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh, notiz)
-             VALUES (?1, ?2, ?3, ?4, ?5, NULL)
+                (date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh,
+                 speicher_laden_kwh, speicher_entladen_kwh, notiz)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL)
              ON CONFLICT(date) DO UPDATE SET
                 erzeugung_kwh = excluded.erzeugung_kwh,
                 eigenverbrauch_kwh = excluded.eigenverbrauch_kwh,
                 einspeisung_kwh = excluded.einspeisung_kwh,
-                netzbezug_kwh = excluded.netzbezug_kwh",
+                netzbezug_kwh = excluded.netzbezug_kwh,
+                -- Speicher-Felder nur ueberschreiben wenn der Sidecar
+                -- konkret Werte liefert (NULL=keine Aenderung, sonst write).
+                speicher_laden_kwh = COALESCE(excluded.speicher_laden_kwh, speicher_laden_kwh),
+                speicher_entladen_kwh = COALESCE(excluded.speicher_entladen_kwh, speicher_entladen_kwh)",
             params![
                 row.date,
                 row.erzeugung_kwh,
                 row.eigenverbrauch_kwh,
                 row.einspeisung_kwh,
                 row.netzbezug_kwh,
+                row.speicher_laden_kwh,
+                row.speicher_entladen_kwh,
             ],
         );
         match res {

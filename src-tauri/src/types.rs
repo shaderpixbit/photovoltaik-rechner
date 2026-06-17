@@ -22,6 +22,13 @@ pub struct DailyProduction {
     pub einspeisung_kwh: f64,
     #[serde(default)]
     pub netzbezug_kwh: Option<f64>,
+    /// Solar -> Akku (kWh, kumuliert pro Tag). Nur fuer Anlagen mit Speicher
+    /// (Anker Solarbank, SolarEdge mit Battery). NULL bei reinen PV-Anlagen.
+    #[serde(default)]
+    pub speicher_laden_kwh: Option<f64>,
+    /// Akku -> Haus (kWh). Pendant zu speicher_laden_kwh.
+    #[serde(default)]
+    pub speicher_entladen_kwh: Option<f64>,
     #[serde(default)]
     pub notiz: Option<String>,
 }

@@ -12,6 +12,10 @@ export interface DailyProduction {
   einspeisung_kwh: number;
   /** Netzbezug (kWh aus dem Netz), optional — für Autarkiegrad / Privat-Ersparnis */
   netzbezug_kwh: number | null;
+  /** Solar → Akku (kWh, kumuliert pro Tag). NULL bei reinen PV-Anlagen ohne Speicher. */
+  speicher_laden_kwh: number | null;
+  /** Akku → Haus (kWh). Pendant zu speicher_laden_kwh. */
+  speicher_entladen_kwh: number | null;
   notiz: string | null;
 }
 

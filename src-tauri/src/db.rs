@@ -151,6 +151,9 @@ pub(crate) fn create_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
          );",
     )?;
     add_column_if_missing(conn, "daily_production", "netzbezug_kwh", "REAL")?;
+    // Batterie-/Solarbank-Flow (optional, nur fuer Anlagen mit Speicher).
+    add_column_if_missing(conn, "daily_production", "speicher_laden_kwh", "REAL")?;
+    add_column_if_missing(conn, "daily_production", "speicher_entladen_kwh", "REAL")?;
     add_column_if_missing(
         conn,
         "assets",

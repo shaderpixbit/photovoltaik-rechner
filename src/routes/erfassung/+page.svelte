@@ -33,6 +33,8 @@
   let erzeugung = $state<number | "">("");
   let einspeisung = $state<number | "">("");
   let netzbezug = $state<number | "">("");
+  let speicherLaden = $state<number | "">("");
+  let speicherEntladen = $state<number | "">("");
   let notiz = $state("");
 
   let eigenverbrauchComputed = $derived.by(() => {
@@ -185,12 +187,16 @@
           erzeugung = existing.erzeugung_kwh;
           einspeisung = existing.einspeisung_kwh;
           netzbezug = existing.netzbezug_kwh ?? "";
+          speicherLaden = existing.speicher_laden_kwh ?? "";
+          speicherEntladen = existing.speicher_entladen_kwh ?? "";
           notiz = existing.notiz ?? "";
           existingInPeriod = 1;
         } else {
           erzeugung = "";
           einspeisung = "";
           netzbezug = "";
+          speicherLaden = "";
+          speicherEntladen = "";
           notiz = "";
           existingInPeriod = 0;
         }
@@ -201,6 +207,8 @@
           erzeugung = "";
           einspeisung = "";
           netzbezug = "";
+          speicherLaden = "";
+          speicherEntladen = "";
           notiz = "";
         } else {
           erzeugung = round1(rows.reduce((s, x) => s + x.erzeugung_kwh, 0));
@@ -209,6 +217,10 @@
           );
           const netzSum = rows.reduce((s, x) => s + (x.netzbezug_kwh ?? 0), 0);
           netzbezug = netzSum > 0 ? round1(netzSum) : "";
+          const spLadSum = rows.reduce((s, x) => s + (x.speicher_laden_kwh ?? 0), 0);
+          speicherLaden = spLadSum > 0 ? round1(spLadSum) : "";
+          const spEntSum = rows.reduce((s, x) => s + (x.speicher_entladen_kwh ?? 0), 0);
+          speicherEntladen = spEntSum > 0 ? round1(spEntSum) : "";
           notiz = "";
         }
       }
@@ -267,11 +279,17 @@
     const totalEi = Number(einspeisung) || 0;
     const hasNetz = netzbezug !== "" && Number.isFinite(Number(netzbezug));
     const totalNetz = hasNetz ? Number(netzbezug) : 0;
+    const hasSpLad = speicherLaden !== "" && Number.isFinite(Number(speicherLaden));
+    const totalSpLad = hasSpLad ? Number(speicherLaden) : 0;
+    const hasSpEnt = speicherEntladen !== "" && Number.isFinite(Number(speicherEntladen));
+    const totalSpEnt = hasSpEnt ? Number(speicherEntladen) : 0;
     const n = days.length;
     const perErz = totalErz / n;
     const perEv = totalEv / n;
     const perEi = totalEi / n;
     const perNetz = totalNetz / n;
+    const perSpLad = totalSpLad / n;
+    const perSpEnt = totalSpEnt / n;
     const note = notiz.trim() || null;
 
     busy = true;
@@ -283,6 +301,8 @@
           eigenverbrauch_kwh: mode === "tag" ? totalEv : perEv,
           einspeisung_kwh: mode === "tag" ? totalEi : perEi,
           netzbezug_kwh: hasNetz ? (mode === "tag" ? totalNetz : perNetz) : null,
+          speicher_laden_kwh: hasSpLad ? (mode === "tag" ? totalSpLad : perSpLad) : null,
+          speicher_entladen_kwh: hasSpEnt ? (mode === "tag" ? totalSpEnt : perSpEnt) : null,
           notiz: note,
         };
         await upsertDaily(entry);
@@ -545,6 +565,34 @@
           placeholder="—"
         />
       </div>
+      <div class="space-y-1.5">
+        <Label for="spl">
+          Speicher Laden (kWh)
+          <span class="text-[var(--tr-text-faint)]">Solar → Akku</span>
+        </Label>
+        <Input
+          id="spl"
+          type="number"
+          step="0.1"
+          min="0"
+          bind:value={speicherLaden}
+          placeholder="—"
+        />
+      </div>
+      <div class="space-y-1.5">
+        <Label for="spe">
+          Speicher Entladen (kWh)
+          <span class="text-[var(--tr-text-faint)]">Akku → Haus</span>
+        </Label>
+        <Input
+          id="spe"
+          type="number"
+          step="0.1"
+          min="0"
+          bind:value={speicherEntladen}
+          placeholder="—"
+        />
+      </div>
       <div class="space-y-1.5 md:col-span-4">
         <Label for="notiz">Notiz (optional)</Label>
         <Input
@@ -621,6 +669,8 @@
             <th class="px-5 py-2 text-right">Erzeugung</th>
             <th class="px-5 py-2 text-right">Eigenverbr.</th>
             <th class="px-5 py-2 text-right">Einspeisung</th>
+            <th class="px-5 py-2 text-right" title="Solar → Akku">Sp ↓</th>
+            <th class="px-5 py-2 text-right" title="Akku → Haus">Sp ↑</th>
             <th class="px-5 py-2 text-left">Notiz</th>
             <th class="px-5 py-2"></th>
           </tr>
@@ -640,6 +690,12 @@
               </td>
               <td class="px-5 py-2 text-right font-mono">
                 {formatKWh(r.einspeisung_kwh)}
+              </td>
+              <td class="px-5 py-2 text-right font-mono text-[var(--tr-text-dim)]">
+                {r.speicher_laden_kwh != null ? formatKWh(r.speicher_laden_kwh) : "—"}
+              </td>
+              <td class="px-5 py-2 text-right font-mono text-[var(--tr-text-dim)]">
+                {r.speicher_entladen_kwh != null ? formatKWh(r.speicher_entladen_kwh) : "—"}
               </td>
               <td class="px-5 py-2 text-[var(--tr-text-dim)]">{r.notiz ?? ""}</td>
               <td class="px-5 py-2 text-right">
