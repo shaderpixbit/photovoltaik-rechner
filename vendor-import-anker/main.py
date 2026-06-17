@@ -92,19 +92,45 @@ def _daterange(von: date, bis: date) -> list[date]:
     return [von + timedelta(days=i) for i in range(days)]
 
 
-def _kwh(value: Any, power_unit: str | None = None) -> float:
+def _kwh(value: Any, unit: str | None = None) -> float:
     """Anker liefert Strings/Floats fuer Energie. Wenn die Quelle in Wh ist,
     durch 1000 teilen — sonst direkt als kWh interpretieren.
     """
     if value is None or value == "":
         return 0.0
     try:
-        v = float(value)
+        v = abs(float(value))  # Anker liefert grid-export teils negativ
     except (TypeError, ValueError):
         return 0.0
-    if (power_unit or "").lower() == "wh":
+    if (unit or "").lower() == "wh":
         v /= 1000.0
     return v
+
+
+def _first_power_value(payload: dict, hardcoded_kwh: bool = True) -> float:
+    """Liest den Tageswert aus power[0].value. Die thomluther-Lib (siehe
+    energy_daily) liest hier IMMER und hardcoded `unit="kwh"`, weil der
+    `power_unit`-Header der Anker-API zwar oft "wh" sagt, die Werte aber
+    in kWh kommen. Wir machen es genauso.
+    """
+    items = payload.get("power") or []
+    if not items:
+        return 0.0
+    first = items[0] if isinstance(items[0], dict) else {}
+    val = first.get("value")
+    return _kwh(val, "kwh" if hardcoded_kwh else payload.get("power_unit"))
+
+
+def _first_charge_trend_value(payload: dict) -> float:
+    """Wie _first_power_value, aber fuer das `charge_trend[]`-Array. Bei
+    devType="grid" liegt der grid_to_home-Tageswert dort.
+    """
+    items = payload.get("charge_trend") or []
+    if not items:
+        return 0.0
+    first = items[0] if isinstance(items[0], dict) else {}
+    val = first.get("value")
+    return _kwh(val, payload.get("charge_unit") or "kwh")
 
 
 def _pick_first_site(sites: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -135,15 +161,21 @@ async def _energy_for_day(
     day: date,
     dev_type: str,
 ) -> dict[str, Any]:
-    """Eine `energy_analysis`-Antwort fuer einen einzelnen Tag (Range = 1 Tag).
-    Bei single-day-Range liefert die Anker-API alle `*_total`-Felder als
-    Tageswerte (statt aggregierter Range-Summen).
+    """Eine `energy_analysis`-Antwort fuer einen einzelnen Tag.
+
+    WICHTIG: `rangeType="week"` — nicht "day"! Mit type="day" liefert Anker
+    Intra-Day-Werte (stuendlich), und die `*_total`-Felder kommen leer
+    zurueck. Die thomluther-Lib (`energy_daily`) nutzt fuer single-day-
+    Queries ebenfalls rangeType="week" — das ist die einzige Variante, bei
+    der die API verlaesslich Tages-Totals in `solar_total`,
+    `solar_to_grid_total`, `solar_to_home_total`, `grid_to_home_total`
+    liefert.
     """
     dt = _to_dt(day)
     payload = await api.energy_analysis(
         siteId=site_id,
         deviceSn="",
-        rangeType="day",
+        rangeType="week",
         startDay=dt,
         endDay=dt,
         devType=dev_type,
@@ -200,13 +232,26 @@ async def _collect(
             done_calls += 1
             await asyncio.sleep(_CALL_DELAY_S)
 
-            sol_unit = sol.get("power_unit")
-            grid_unit = grid.get("power_unit")
+            # Tageswerte primaer aus power[]/charge_trend[] lesen (so wie es
+            # die thomluther-Lib macht). Fallback auf *_total-Felder, die
+            # bei single-day-Queries manchmal leer oder mit falschem Unit
+            # zurueckkommen.
+            sol_t_unit = sol.get("total_energy_unit")
+            grid_t_unit = grid.get("total_energy_unit")
 
-            erz = _kwh(sol.get("solar_total"), sol_unit)
-            ein = _kwh(sol.get("solar_to_grid_total"), sol_unit)
-            ev_from_api = _kwh(sol.get("solar_to_home_total"), sol_unit)
-            net = _kwh(grid.get("grid_to_home_total"), grid_unit)
+            erz = _first_power_value(sol) or _kwh(
+                sol.get("solar_total"), sol_t_unit
+            )
+            # devType="grid": power[0].value = solar_to_grid (negativ),
+            # charge_trend[0].value = grid_to_home
+            ein = _first_power_value(grid) or _kwh(
+                grid.get("solar_to_grid_total") or sol.get("solar_to_grid_total"),
+                grid_t_unit or sol_t_unit,
+            )
+            net = _first_charge_trend_value(grid) or _kwh(
+                grid.get("grid_to_home_total"), grid_t_unit
+            )
+            ev_from_api = _kwh(sol.get("solar_to_home_total"), sol_t_unit)
 
             # erzeugung = 0 heisst: Anker hat keinen Solar-Datensatz fuer
             # diesen Tag geliefert (Future-Tag, Lueckendaten, oder System-
