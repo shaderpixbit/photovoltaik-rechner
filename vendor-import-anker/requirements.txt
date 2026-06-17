@@ -1,2 +1,4 @@
-anker-solix-api>=2.0.0
-aiohttp>=3.9
+# anker-solix-api ist nicht auf PyPI — direkt aus dem GitHub-Tag installieren.
+# Pin auf einen konkreten Tag, damit API-Brueche kontrolliert reinkommen.
+anker-solix-api @ git+https://github.com/thomluther/anker-solix-api.git@v3.6.3
+aiohttp>=3.10

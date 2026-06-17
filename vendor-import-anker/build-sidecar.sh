@@ -36,6 +36,15 @@ fi
 # shellcheck source=/dev/null
 source "$VENV/bin/activate"
 
+# anker-solix-api benoetigt Python >=3.12 — beim ersten Lauf hart pruefen.
+PY_VERSION="$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+if [ "$(printf '%s\n3.12\n' "$PY_VERSION" | sort -V | head -1)" != "3.12" ]; then
+  echo "Python >=3.12 erforderlich (gefunden: $PY_VERSION)." >&2
+  echo "Im Nix-Dev-Shell ist python312 gesetzt — sonst venv loeschen ($VENV) und neu bauen." >&2
+  deactivate
+  exit 1
+fi
+
 echo "→ Abhaengigkeiten installieren"
 pip install --quiet --upgrade pip
 pip install --quiet -r "$HERE/requirements.txt"

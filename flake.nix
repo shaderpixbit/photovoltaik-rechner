@@ -54,11 +54,11 @@
           dpkg            # .deb
           rpm             # .rpm
           # Python für den Anker-Cloud-Sidecar (vendor-import-anker/).
-          # build-sidecar.sh legt ein lokales .venv an und installiert
-          # `anker-solix-api` + `pyinstaller` via pip — daher reichen hier
-          # python3 (mit `venv` + `ensurepip`) und ein C-Compiler, falls eine
-          # Wheel-Dependency nativ kompiliert werden muss.
-          python3
+          # anker-solix-api verlangt Python >=3.12 — daher explizit gepinnt.
+          # build-sidecar.sh legt ein lokales .venv an und installiert die
+          # Lib direkt aus dem GitHub-Tag (sie ist nicht auf PyPI).
+          # gcc als Fallback, falls eine Wheel-Dependency nativ kompiliert werden muss.
+          python312
           gcc
           # Convenience:
           jq
