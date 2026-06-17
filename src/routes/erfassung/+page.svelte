@@ -72,6 +72,10 @@
   let importProgressDone = $state(0);
   let importProgressTotal = $state(0);
   let unlistenProgress: UnlistenFn | null = null;
+  // Verzoegert das Ausblenden des Banners um 2s nach Import-Ende, damit der
+  // User den Endzustand sieht. Handle bewahren, damit ein neuer Import den
+  // alten Timer cancelt — sonst clearen wir das frische Banner zu frueh.
+  let bannerClearTimer: ReturnType<typeof setTimeout> | null = null;
 
   $effect(() => {
     if (importStartedAt === null) {
@@ -355,6 +359,18 @@
       );
       if (!ok) return;
     }
+    // Vorherigen Banner-Clear-Timer canceln, sonst loescht er waehrend des
+    // neuen Imports den Banner.
+    if (bannerClearTimer !== null) {
+      clearTimeout(bannerClearTimer);
+      bannerClearTimer = null;
+    }
+    // Defensive: falls ein vorheriger Listener noch lebt, abloesen bevor wir
+    // einen neuen anhaengen — sonst flattern Progress-Events doppelt.
+    if (unlistenProgress) {
+      unlistenProgress();
+      unlistenProgress = null;
+    }
     busy = true;
     importStartedAt = Date.now();
     importEstSec = estSec;
@@ -413,8 +429,9 @@
       // Card noch 2s sichtbar lassen, damit der User auch bei schnellem /
       // fehlgeschlagenem Import den Endzustand wahrnimmt — sonst flasht der
       // Banner zu kurz auf.
-      setTimeout(() => {
+      bannerClearTimer = setTimeout(() => {
         importStartedAt = null;
+        bannerClearTimer = null;
       }, 2000);
     }
   }

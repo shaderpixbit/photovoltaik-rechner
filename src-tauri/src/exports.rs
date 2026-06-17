@@ -663,12 +663,7 @@ enum SidecarLine {
     /// Ein Tages-Datensatz — Rust batched und committed.
     Row(SidecarRow),
     /// Tag uebersprungen (kein Insert) — z.B. erzeugung=0 oder Zukunft.
-    Skip {
-        #[allow(dead_code)]
-        date: String,
-        #[allow(dead_code)]
-        reason: String,
-    },
+    Skip { date: String, reason: String },
     /// Letzte Zeile mit gesammelten Warnungen.
     Summary {
         #[serde(default)]

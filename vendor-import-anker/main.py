@@ -64,6 +64,24 @@ except ImportError as exc:
 # bei sequentiellen Calls 0.4s konservativ.
 _CALL_DELAY_S = 0.4
 
+# Per-Call-Timeout fuer energy_analysis. aiohttp default ist 5min, was im
+# Hang-Fall einen "Freeze" von Minuten produziert. 25s ist grosszuegig — Anker
+# antwortet typisch in <1s.
+_HTTP_TIMEOUT_S = 25
+# Login (update_sites) macht intern mehrere Calls + Auth — laengeres Budget.
+_LOGIN_TIMEOUT_S = 90
+
+
+def _setup_logging() -> None:
+    """Anker-Lib + Transitive-Libs auf WARNING klemmen und vom Root-Logger
+    abkoppeln, damit kein DEBUG/INFO-Spam die stderr-NDJSON-Zeilen
+    verunreinigt. Ohne Handler werden Records einfach verworfen.
+    """
+    for name in ("anker", "aiohttp", "asyncio"):
+        lg = logging.getLogger(name)
+        lg.setLevel(logging.WARNING)
+        lg.propagate = False
+
 
 def _parse_iso(s: str) -> date:
     return datetime.strptime(s, "%Y-%m-%d").date()
@@ -122,14 +140,29 @@ def _first_charge_trend_value(payload: dict) -> float:
     return _kwh(val, payload.get("charge_unit") or "kwh")
 
 
-def _pick_first_site(sites: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+def _pick_first_site(
+    sites: dict[str, Any],
+) -> tuple[str, dict[str, Any], list[str]]:
+    """Erste Anlage des Accounts + Warnung wenn weitere existieren.
+
+    Multi-Site-Accounts sind selten (Mehrfamilienhaus, Gewerbe). Bis die
+    UI einen Site-Selector hat, importieren wir die erste und melden die
+    anderen explizit, damit der User es bemerkt.
+    """
     if not sites:
         raise RuntimeError(
             "Keine Anlage im Anker-Account gefunden. Pruefe Login-Daten und "
             "ob die Solarbank in der Anker-App eingerichtet ist."
         )
-    site_id = next(iter(sites.keys()))
-    return site_id, sites[site_id]
+    keys = list(sites.keys())
+    site_id = keys[0]
+    warns: list[str] = []
+    if len(keys) > 1:
+        warns.append(
+            f"Anker-Account hat {len(keys)} Anlagen — importiere nur die "
+            f"erste ({site_id}). Weitere ignoriert: {', '.join(keys[1:])}"
+        )
+    return site_id, sites[site_id], warns
 
 
 def _progress(msg: str, done: int = 0, total: int = 0) -> None:
@@ -166,13 +199,16 @@ async def _energy_for_day(
     liefert.
     """
     dt = _to_dt(day)
-    payload = await api.energy_analysis(
-        siteId=site_id,
-        deviceSn="",
-        rangeType="week",
-        startDay=dt,
-        endDay=dt,
-        devType=dev_type,
+    payload = await asyncio.wait_for(
+        api.energy_analysis(
+            siteId=site_id,
+            deviceSn="",
+            rangeType="week",
+            startDay=dt,
+            endDay=dt,
+            devType=dev_type,
+        ),
+        timeout=_HTTP_TIMEOUT_S,
     )
     return payload if isinstance(payload, dict) else {}
 
@@ -196,8 +232,15 @@ async def _collect(
     async with ClientSession() as session:
         api = AnkerSolixApi(email, password, country, session, logging.getLogger("anker"))
         _progress(f"Login Anker-Cloud ({email[:3]}***)", 0, total_calls)
-        await api.update_sites()
-        site_id, _site = _pick_first_site(api.sites)
+        try:
+            await asyncio.wait_for(api.update_sites(), timeout=_LOGIN_TIMEOUT_S)
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError(
+                f"Anker-Cloud antwortet nicht (>{_LOGIN_TIMEOUT_S}s beim "
+                "Login). Pruefe Internet-Verbindung und Anker-Server-Status."
+            ) from exc
+        site_id, _site, site_warns = _pick_first_site(api.sites)
+        warnings.extend(site_warns)
         _emit({"kind": "site", "site_id": site_id})
         _progress(
             f"Anlage gefunden — {len(days)} Tage ({total_calls} Calls)",
@@ -323,6 +366,8 @@ def main() -> int:
     parser.add_argument("--von", required=True, help="Startdatum ISO YYYY-MM-DD")
     parser.add_argument("--bis", required=True, help="Enddatum ISO YYYY-MM-DD")
     args = parser.parse_args()
+
+    _setup_logging()
 
     email = os.environ.get("ANKER_EMAIL", "").strip()
     password = os.environ.get("ANKER_PASSWORD", "").strip()
