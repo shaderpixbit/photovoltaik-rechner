@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import {
     deleteDaily,
@@ -359,6 +359,10 @@
     importProgressMsg = "Starte Sidecar…";
     importProgressDone = 0;
     importProgressTotal = 0;
+    // Garantieren dass der Banner gerendert ist bevor wir blockierende
+    // Awaits machen — Svelte 5 batched State-Mutations, await listen()
+    // koennte sonst die DOM-Aktualisierung verzoegern.
+    await tick();
     // Live-Updates vom Sidecar abonnieren BEVOR die invoke laeuft — sonst
     // koennten frueh emittierte Events verloren gehen.
     unlistenProgress = await listen<{
@@ -366,6 +370,9 @@
       done: number;
       total: number;
     }>("anker-import-progress", (e) => {
+      // console.log laesst sich in DevTools (F12 in dev) live mitlesen —
+      // wenn hier nichts erscheint, kommt das Event nicht vom Rust an.
+      console.debug("[anker-import-progress]", e.payload);
       importProgressMsg = e.payload.progress;
       importProgressDone = e.payload.done;
       importProgressTotal = e.payload.total;
@@ -428,34 +435,46 @@
       ? Math.min(99, Math.round((importElapsedSec / importEstSec) * 100))
       : 0}
     {@const pct = importProgressTotal > 0 ? realPct : estPct}
-    <Card>
-      <div class="px-5 py-4">
-        <div class="flex items-center justify-between text-sm">
-          <span class="inline-flex items-center gap-2 font-medium">
-            <span class="inline-block size-2 animate-pulse rounded-full"
-              style="background: var(--tr-sun);"></span>
-            {importProgressMsg || "Anker-Cloud-Import laeuft…"}
-          </span>
-          <span class="font-mono text-[var(--tr-text-dim)]">
-            {#if importProgressTotal > 0}
-              {importProgressDone}/{importProgressTotal} Calls ·
+    <!-- Sticky an die Top-Zone, damit der Banner auch bei langer Seite
+         immer sichtbar bleibt waehrend der Sidecar laeuft. -->
+    <div class="sticky top-2 z-30">
+      <div
+        class="rounded-lg border-2 shadow-lg"
+        style="background: var(--tr-surface); border-color: var(--tr-sun);"
+      >
+        <div class="px-5 py-4">
+          <div class="flex items-center justify-between text-sm">
+            <span class="inline-flex items-center gap-2 font-medium">
+              <span class="inline-block size-2.5 animate-pulse rounded-full"
+                style="background: var(--tr-sun);"></span>
+              {importProgressMsg || "Anker-Cloud-Import laeuft…"}
+            </span>
+            <span class="font-mono text-xs text-[var(--tr-text-dim)]">
+              {#if importProgressTotal > 0}
+                {importProgressDone}/{importProgressTotal} Calls ·
+              {/if}
+              {formatDuration(importElapsedSec)} / ~{formatDuration(importEstSec)}
+            </span>
+          </div>
+          <div class="mt-2 h-2 w-full overflow-hidden rounded-full"
+            style="background: var(--tr-surface2);">
+            <div
+              class="h-full transition-all duration-300"
+              style="width: {pct}%; background: var(--tr-sun);"
+            ></div>
+          </div>
+          <p class="mt-2 text-xs text-[var(--tr-text-faint)]">
+            Sidecar holt Tageswerte tagweise (2 Calls/Tag, 0.4s Pause wegen
+            Rate-Limit). Tage ohne Solar-Daten werden uebersprungen.
+            {#if importProgressTotal === 0 && importElapsedSec > 5}
+              <br /><strong>Hinweis:</strong> nach 5s noch keine Live-Events vom
+              Sidecar — eventuell altes Rust-Binary. <code>bun run tauri dev</code>
+              neu starten falls Probleme.
             {/if}
-            {formatDuration(importElapsedSec)} / ~{formatDuration(importEstSec)}
-          </span>
+          </p>
         </div>
-        <div class="mt-2 h-1.5 w-full overflow-hidden rounded-full"
-          style="background: var(--tr-surface2);">
-          <div
-            class="h-full transition-all duration-300"
-            style="width: {pct}%; background: var(--tr-sun);"
-          ></div>
-        </div>
-        <p class="mt-2 text-xs text-[var(--tr-text-faint)]">
-          Sidecar holt Tageswerte in 7-Tages-Chunks. Tage ohne Solar-Daten
-          werden uebersprungen — bestehende Werte werden nie auf 0 ueberschrieben.
-        </p>
       </div>
-    </Card>
+    </div>
   {/if}
 
   <Card>
