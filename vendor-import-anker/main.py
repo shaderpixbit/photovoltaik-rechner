@@ -206,9 +206,23 @@ async def _collect(
             total_calls,
         )
 
+        today = date.today()
         result_rows: list[dict[str, Any]] = []
         for idx, d in enumerate(days, start=1):
             iso = d.isoformat()
+
+            # Zukunfts-Tage gar nicht erst abfragen — Anker antwortet
+            # langsam mit leeren Daten und der User wuerde sich fragen
+            # warum bei Monat=Juli minutenlang nichts passiert.
+            if d > today:
+                done_calls += 2
+                warnings.append(f"{iso}: in der Zukunft — kein API-Call.")
+                _progress(
+                    f"Tag {idx}/{len(days)} ({iso}): Zukunft, uebersprungen",
+                    done_calls,
+                    total_calls,
+                )
+                continue
 
             try:
                 sol = await _energy_for_day(api, site_id, d, "solar_production")
