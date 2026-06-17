@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+  import { confirm as askConfirm } from "@tauri-apps/plugin-dialog";
   import {
     deleteDaily,
     getDaily,
@@ -263,15 +264,13 @@
       showToast("err", "Einspeisung darf nicht größer als Erzeugung sein.");
       return;
     }
-    if (
-      (mode === "monat" || mode === "jahr") &&
-      existingInPeriod > 0 &&
-      !confirm(
+    if ((mode === "monat" || mode === "jahr") && existingInPeriod > 0) {
+      const ok = await askConfirm(
         `Im Zeitraum ${periodLabel} existieren bereits ${existingInPeriod} Tageseinträge. ` +
           `Diese werden durch die gleichmäßige Verteilung überschrieben. Fortfahren?`,
-      )
-    ) {
-      return;
+        { title: "Vorhandene Tage überschreiben?", kind: "warning" },
+      );
+      if (!ok) return;
     }
 
     const totalErz = Number(erzeugung) || 0;
@@ -322,7 +321,11 @@
   }
 
   async function remove(d: string) {
-    if (!confirm(`Eintrag ${formatDateDE(d)} wirklich löschen?`)) return;
+    const ok = await askConfirm(
+      `Eintrag ${formatDateDE(d)} wirklich löschen?`,
+      { title: "Eintrag löschen", kind: "warning" },
+    );
+    if (!ok) return;
     try {
       await deleteDaily(d);
       await loadRecent();
@@ -343,15 +346,14 @@
     // = ca. 1s/Tag. Plus ~3s Login-Overhead.
     const days = periodDays().length;
     const estSec = days + 3;
-    if (
-      days > 31 &&
-      !confirm(
+    if (days > 31) {
+      const ok = await askConfirm(
         `Import von ${days} Tagen (${r.from} bis ${r.to}) — ca. ` +
-          `${formatDuration(estSec)} min Laufzeit (2 Calls/Tag wegen ` +
+          `${formatDuration(estSec)} Laufzeit (2 Calls/Tag wegen ` +
           `Anker-Rate-Limit). Fortfahren?`,
-      )
-    ) {
-      return;
+        { title: "Langer API-Import", kind: "info" },
+      );
+      if (!ok) return;
     }
     busy = true;
     importStartedAt = Date.now();

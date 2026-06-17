@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import {
+    confirm as askConfirm,
     open as openDialog,
     save as saveDialog,
   } from "@tauri-apps/plugin-dialog";
@@ -239,15 +240,13 @@
   }
 
   async function doImportBackup() {
-    if (
-      !confirm(
-        "Restore überschreibt ALLE bestehenden Daten dieser App (Tage, " +
-          "Auszahlungen, Ausgaben, Anlagen, Verläufe, Einstellungen) mit dem " +
-          "Inhalt der Backup-Datei. Fortfahren?",
-      )
-    ) {
-      return;
-    }
+    const ok = await askConfirm(
+      "Restore überschreibt ALLE bestehenden Daten dieser App (Tage, " +
+        "Auszahlungen, Ausgaben, Anlagen, Verläufe, Einstellungen) mit dem " +
+        "Inhalt der Backup-Datei. Fortfahren?",
+      { title: "Backup wiederherstellen?", kind: "warning" },
+    );
+    if (!ok) return;
     backupMsg = null;
     backupBusy = true;
     try {

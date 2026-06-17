@@ -8,6 +8,9 @@
     "core:event:default",
     "opener:default",
     "dialog:default",
+    "dialog:allow-ask",
+    "dialog:allow-confirm",
+    "dialog:allow-message",
     "fs:default"
   ]
 }

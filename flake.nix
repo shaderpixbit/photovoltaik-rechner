@@ -40,6 +40,16 @@
           openssl
           xdotool
           libayatana-appindicator
+          # WebKit nutzt GStreamer fuer Media (Audio/Video, Notifications,
+          # `<audio>` etc.) — fehlende plugins werfen
+          # "gstreamer element appsink not found" und schicken WebKit in
+          # einen Debugger-Break-Trap.
+          gst_all_1.gstreamer
+          gst_all_1.gst-plugins-base
+          gst_all_1.gst-plugins-good
+          gst_all_1.gst-plugins-bad
+          gst_all_1.gst-plugins-ugly
+          gst_all_1.gst-libav
         ];
 
         # Native command-line helpers — toolchains, bundlers, packagers.
@@ -81,6 +91,10 @@
             export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath tauriLibs}:''${LD_LIBRARY_PATH:-}"
             export GIO_MODULE_DIR="${pkgs.glib-networking}/lib/gio/modules"
             export XDG_DATA_DIRS="${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}:${pkgs.gtk3}/share/gsettings-schemas/${pkgs.gtk3.name}:''${XDG_DATA_DIRS:-}"
+
+            # GStreamer-Plugins (appsink, decodebin, etc.) — WebKit findet sie
+            # nur ueber GST_PLUGIN_SYSTEM_PATH_1_0.
+            export GST_PLUGIN_SYSTEM_PATH_1_0="${pkgs.lib.makeSearchPathOutput "lib" "lib/gstreamer-1.0" (with pkgs.gst_all_1; [ gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav ])}"
 
             # Cargo-Cache lokal im Projekt halten, damit parallele Shells sich
             # nicht ins Gehege kommen.
