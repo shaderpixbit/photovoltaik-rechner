@@ -265,12 +265,27 @@
   }
 
   async function tryImport() {
+    const r = periodRange();
+    if (!r) {
+      showToast("err", "Ungueltiger Zeitraum.");
+      return;
+    }
+    // Anker macht 2 API-Calls pro Tag mit 0.4s sleep -> ca. 1s pro Tag.
+    // Bei langen Ranges Bestaetigung einholen, damit der User nicht denkt
+    // der Button haengt.
+    const days = periodDays().length;
+    if (
+      days > 31 &&
+      !confirm(
+        `Import von ${days} Tagen (${r.from} bis ${r.to}) — Anker ` +
+          `braucht ca. ${Math.ceil(days * 1.0)} Sekunden plus Anmeldung. Fortfahren?`,
+      )
+    ) {
+      return;
+    }
     busy = true;
     try {
-      const today = todayISO();
-      // Ab dem juengsten vorhandenen Tag bis heute — taegliche Aggregate, idempotent.
-      const lastImport = recent.length > 0 ? recent[0].date : todayISO();
-      const res = await importFromVendor(lastImport, today);
+      const res = await importFromVendor(r.from, r.to);
       let msg = `${res.imported} Tage importiert`;
       if (res.skipped > 0) msg += `, ${res.skipped} uebersprungen`;
       if (res.warnings.length > 0) msg += ` (${res.warnings.length} Hinweise)`;
@@ -298,9 +313,10 @@
         Manuelle Eingabe als Tag, Monat oder Jahr — oder Import aus Hersteller-API.
       </p>
     </div>
-    <Button variant="ghost" onclick={tryImport} disabled={busy}>
+    <Button variant="ghost" onclick={tryImport} disabled={busy}
+      title="Importiert Anker-Cloud-Tageswerte fuer den unten gewaehlten Zeitraum. Heute/gestern liefert Anker oft noch keine finale Tagessumme — die Tage muessen ggf. spaeter nachgeholt werden.">
       <CloudDownloadIcon class="size-4" />
-      API-Import
+      API-Import ({periodLabel})
     </Button>
   </div>
 
