@@ -382,6 +382,10 @@ pub fn get_settings(state: State<DbState>) -> Result<Settings, String> {
     let betreiber_perioden = load_betreiber_perioden(&db).map_err(|e| e.to_string())?;
     let verguetung_perioden = load_verguetung_perioden(&db).map_err(|e| e.to_string())?;
     let stromtarif_perioden = load_stromtarif_perioden(&db).map_err(|e| e.to_string())?;
+    let vendor = get_setting(&db, "vendor")
+        .map_err(|e| e.to_string())?
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "none".to_string());
     let email = get_setting(&db, "anker_email")
         .map_err(|e| e.to_string())?
         .filter(|s| !s.is_empty());
@@ -392,6 +396,12 @@ pub fn get_settings(state: State<DbState>) -> Result<Settings, String> {
         .map_err(|e| e.to_string())?
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "DE".to_string());
+    let se_api_key = get_setting(&db, "solaredge_api_key")
+        .map_err(|e| e.to_string())?
+        .filter(|s| !s.is_empty());
+    let se_site_id = get_setting(&db, "solaredge_site_id")
+        .map_err(|e| e.to_string())?
+        .filter(|s| !s.is_empty());
     Ok(Settings {
         ust_perioden,
         betreiber_perioden,
@@ -400,9 +410,12 @@ pub fn get_settings(state: State<DbState>) -> Result<Settings, String> {
         ust_satz_regel: get_setting_f64(&db, "ust_satz_regel", 0.19),
         eigenverbrauch_preis: get_setting_f64(&db, "eigenverbrauch_preis", 0.20),
         strom_bezugspreis: get_setting_f64(&db, "strom_bezugspreis", 0.35),
+        vendor,
         anker_email: email,
         anker_password: password,
         anker_country: country,
+        solaredge_api_key: se_api_key,
+        solaredge_site_id: se_site_id,
     })
 }
 
@@ -423,6 +436,11 @@ pub fn set_settings(state: State<DbState>, settings: Settings) -> Result<(), Str
         &settings.strom_bezugspreis.to_string(),
     )
     .map_err(|e| e.to_string())?;
+    let vendor = match settings.vendor.as_str() {
+        "anker" | "solaredge" | "none" => settings.vendor.as_str(),
+        _ => "none",
+    };
+    set_setting(&db, "vendor", vendor).map_err(|e| e.to_string())?;
     set_setting(
         &db,
         "anker_email",
@@ -441,6 +459,18 @@ pub fn set_settings(state: State<DbState>, settings: Settings) -> Result<(), Str
         settings.anker_country.as_str()
     };
     set_setting(&db, "anker_country", country).map_err(|e| e.to_string())?;
+    set_setting(
+        &db,
+        "solaredge_api_key",
+        settings.solaredge_api_key.as_deref().unwrap_or(""),
+    )
+    .map_err(|e| e.to_string())?;
+    set_setting(
+        &db,
+        "solaredge_site_id",
+        settings.solaredge_site_id.as_deref().unwrap_or(""),
+    )
+    .map_err(|e| e.to_string())?;
 
     db.execute("DELETE FROM ust_perioden", [])
         .map_err(|e| e.to_string())?;

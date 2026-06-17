@@ -14,7 +14,10 @@ photovoltaik.db-shm
 .cargo
 .direnv
 
-# Sidecar build-artefakte (Anker-Solix Python -> PyInstaller)
+# Sidecar build-artefakte (Anker-Solix / SolarEdge Python -> PyInstaller)
 src-tauri/binaries/anker-solix-*
+src-tauri/binaries/solaredge-*
 vendor-import-anker/.venv
 vendor-import-anker/.pyinstaller-build
+vendor-import-solaredge/.venv
+vendor-import-solaredge/.pyinstaller-build

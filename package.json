@@ -10,8 +10,8 @@
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "tauri": "tauri",
-    "sidecar:build": "./vendor-import-anker/build-sidecar.sh",
-    "tauri:release": "./vendor-import-anker/build-sidecar.sh && tauri build --config src-tauri/tauri.bundle.conf.json"
+    "sidecar:build": "./vendor-import-anker/build-sidecar.sh && ./vendor-import-solaredge/build-sidecar.sh",
+    "tauri:release": "./vendor-import-anker/build-sidecar.sh && ./vendor-import-solaredge/build-sidecar.sh && tauri build --config src-tauri/tauri.bundle.conf.json"
   },
   "license": "MIT",
   "dependencies": {

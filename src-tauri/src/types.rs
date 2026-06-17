@@ -136,16 +136,28 @@ pub struct Settings {
     pub eigenverbrauch_preis: f64,
     /// Fallback-Arbeitspreis (€/kWh) — wenn kein Tarif-Eintrag für ein Datum existiert.
     pub strom_bezugspreis: f64,
+    /// Aktiver Hersteller-API-Adapter: "none" | "anker" | "solaredge".
+    /// Steuert welches Sidecar `import_from_vendor` aufruft.
+    #[serde(default = "default_vendor")]
+    pub vendor: String,
     #[serde(default)]
     pub anker_email: Option<String>,
     #[serde(default)]
     pub anker_password: Option<String>,
     #[serde(default = "default_country")]
     pub anker_country: String,
+    #[serde(default)]
+    pub solaredge_api_key: Option<String>,
+    #[serde(default)]
+    pub solaredge_site_id: Option<String>,
 }
 
 fn default_country() -> String {
     "DE".to_string()
+}
+
+fn default_vendor() -> String {
+    "none".to_string()
 }
 
 #[derive(Serialize, Clone, Debug)]

@@ -203,11 +203,17 @@ struct SettingsKV {
     eigenverbrauch_preis: f64,
     strom_bezugspreis: f64,
     #[serde(default)]
+    vendor: Option<String>,
+    #[serde(default)]
     anker_email: Option<String>,
     #[serde(default)]
     anker_password: Option<String>,
     #[serde(default)]
     anker_country: Option<String>,
+    #[serde(default)]
+    solaredge_api_key: Option<String>,
+    #[serde(default)]
+    solaredge_site_id: Option<String>,
 }
 
 fn collect_backup(conn: &Connection) -> Result<Backup, rusqlite::Error> {
@@ -280,9 +286,12 @@ fn collect_backup(conn: &Connection) -> Result<Backup, rusqlite::Error> {
         ust_satz_regel: get_setting_f64(conn, "ust_satz_regel", 0.19),
         eigenverbrauch_preis: get_setting_f64(conn, "eigenverbrauch_preis", 0.20),
         strom_bezugspreis: get_setting_f64(conn, "strom_bezugspreis", 0.35),
+        vendor: get_setting(conn, "vendor")?.filter(|s| !s.is_empty()),
         anker_email: get_setting(conn, "anker_email")?.filter(|s| !s.is_empty()),
         anker_password: get_setting(conn, "anker_password")?.filter(|s| !s.is_empty()),
         anker_country: get_setting(conn, "anker_country")?.filter(|s| !s.is_empty()),
+        solaredge_api_key: get_setting(conn, "solaredge_api_key")?.filter(|s| !s.is_empty()),
+        solaredge_site_id: get_setting(conn, "solaredge_site_id")?.filter(|s| !s.is_empty()),
     };
 
     Ok(Backup {
@@ -568,6 +577,12 @@ pub fn import_backup(state: State<DbState>, path: String) -> Result<BackupSummar
     )
     .map_err(|e| e.to_string())?;
     tx.execute(
+        "INSERT INTO settings (key, value) VALUES ('vendor', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![s.vendor.clone().unwrap_or_else(|| "none".to_string())],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
         "INSERT INTO settings (key, value) VALUES ('anker_email', ?1)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         params![s.anker_email.clone().unwrap_or_default()],
@@ -583,6 +598,18 @@ pub fn import_backup(state: State<DbState>, path: String) -> Result<BackupSummar
         "INSERT INTO settings (key, value) VALUES ('anker_country', ?1)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         params![s.anker_country.clone().unwrap_or_else(|| "DE".to_string())],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO settings (key, value) VALUES ('solaredge_api_key', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![s.solaredge_api_key.clone().unwrap_or_default()],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO settings (key, value) VALUES ('solaredge_site_id', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![s.solaredge_site_id.clone().unwrap_or_default()],
     )
     .map_err(|e| e.to_string())?;
 
@@ -632,11 +659,41 @@ struct SidecarError {
     error: String,
 }
 
-/// Resolves the Anker-Solix sidecar command. Tries (in order):
-/// 1. `<exe_dir>/anker-solix(.exe)` — production bundle.
-/// 2. `<exe_dir>/anker-solix-<triple>(.exe)` — Tauri sidecar naming convention.
-/// 3. `python3 <cwd>/vendor-import-anker/main.py` — dev fallback.
-fn resolve_sidecar() -> Result<std::process::Command, String> {
+/// Beschreibt einen Vendor-Sidecar fuer den `resolve_sidecar`-Lookup.
+/// Pro Vendor existiert ein eigenes Sidecar (Bin + venv) im Projekt.
+struct SidecarSpec {
+    /// Binary-Name ohne Suffix — wird sowohl als Plain-Name als auch mit
+    /// `-<triple>(.exe)` neben der Executable gesucht.
+    bin: &'static str,
+    /// Ordnername unter dem Repo-Root — enthaelt main.py + optional .venv.
+    repo_dir: &'static str,
+}
+
+fn spec_for(vendor: &str) -> Result<SidecarSpec, String> {
+    match vendor {
+        "anker" => Ok(SidecarSpec {
+            bin: "anker-solix",
+            repo_dir: "vendor-import-anker",
+        }),
+        "solaredge" => Ok(SidecarSpec {
+            bin: "solaredge",
+            repo_dir: "vendor-import-solaredge",
+        }),
+        "none" | "" => Err(
+            "Kein Hersteller-API ausgewaehlt. Waehle Anker oder SolarEdge \
+             unter Einstellungen → Hersteller-API."
+                .into(),
+        ),
+        other => Err(format!("Unbekannter Vendor: '{other}'")),
+    }
+}
+
+/// Resolves a vendor sidecar command. Tries (in order):
+/// 1. `<exe_dir>/<bin>(.exe)` — production bundle (plain).
+/// 2. `<exe_dir>/<bin>-<triple>(.exe)` — Tauri sidecar naming convention.
+/// 3. `python3 <cwd>/<repo_dir>/main.py` — dev fallback. Bevorzugt
+///    venv-Python falls vorhanden (Anker braucht Deps, SolarEdge nicht).
+fn resolve_sidecar(spec: &SidecarSpec) -> Result<std::process::Command, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let exe_dir = exe
         .parent()
@@ -644,38 +701,36 @@ fn resolve_sidecar() -> Result<std::process::Command, String> {
     let ext = if cfg!(windows) { ".exe" } else { "" };
 
     // Variante 1: nackter Name neben der Executable.
-    let plain = exe_dir.join(format!("anker-solix{ext}"));
+    let plain = exe_dir.join(format!("{}{ext}", spec.bin));
     if plain.is_file() {
         return Ok(std::process::Command::new(plain));
     }
 
     // Variante 2: Tauri-Sidecar-Naming mit Target-Triple-Suffix.
+    let prefix = format!("{}-", spec.bin);
     if let Ok(entries) = std::fs::read_dir(exe_dir) {
         for entry in entries.flatten() {
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            if name_str.starts_with("anker-solix-") && name_str.ends_with(ext) {
+            if name_str.starts_with(&prefix) && name_str.ends_with(ext) {
                 return Ok(std::process::Command::new(entry.path()));
             }
         }
     }
 
     // Variante 3: Dev-Fallback — Python-Script direkt im Repo aufrufen.
-    // Bevorzugt das venv-Python (build-sidecar.sh hat dort die Anker-Deps
-    // installiert). Faellt nur auf System-`python3` zurueck wenn kein venv
-    // existiert — dann muss der User die Deps systemweit installiert haben.
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    let venv_python_rel = if cfg!(windows) {
-        ["vendor-import-anker", ".venv", "Scripts", "python.exe"]
+    let venv_python_rel: [&str; 3] = if cfg!(windows) {
+        [".venv", "Scripts", "python.exe"]
     } else {
-        ["vendor-import-anker", ".venv", "bin", "python"]
+        [".venv", "bin", "python"]
     };
     for base in [cwd.clone(), cwd.join("..")] {
-        let script = base.join("vendor-import-anker").join("main.py");
+        let script = base.join(spec.repo_dir).join("main.py");
         if !script.is_file() {
             continue;
         }
-        let mut venv_python = base.clone();
+        let mut venv_python = base.join(spec.repo_dir);
         for part in venv_python_rel {
             venv_python.push(part);
         }
@@ -689,12 +744,11 @@ fn resolve_sidecar() -> Result<std::process::Command, String> {
         return Ok(cmd);
     }
 
-    Err(
-        "Anker-Sidecar nicht gefunden. \
-         Im Dev-Modus `python3 vendor-import-anker/main.py` testen, \
-         fuer Release `./vendor-import-anker/build-sidecar.sh` ausfuehren."
-            .into(),
-    )
+    Err(format!(
+        "{} Sidecar nicht gefunden. Im Dev-Modus `python3 {}/main.py` testen, \
+         fuer Release `./{}/build-sidecar.sh` ausfuehren.",
+        spec.bin, spec.repo_dir, spec.repo_dir
+    ))
 }
 
 #[command]
@@ -704,41 +758,74 @@ pub fn import_from_vendor(
     von: String,
     bis: String,
 ) -> Result<ImportResult, String> {
-    // Settings (Login-Daten) vor dem Sidecar-Aufruf lesen, Lock dann freigeben.
-    let (email, password, country) = {
+    // Settings (Vendor-Wahl + Credentials) vor dem Sidecar-Aufruf lesen,
+    // Lock dann freigeben (Sidecar laeuft 1-300s, blockiert sonst die DB).
+    let (vendor, anker_email, anker_password, anker_country, se_api_key, se_site_id) = {
         let db = state.0.lock().map_err(|e| e.to_string())?;
-        let email = get_setting(&db, "anker_email")
+        let vendor = get_setting(&db, "vendor")
+            .map_err(|e| e.to_string())?
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "none".to_string());
+        let anker_email = get_setting(&db, "anker_email")
             .map_err(|e| e.to_string())?
             .filter(|s| !s.is_empty());
-        let password = get_setting(&db, "anker_password")
+        let anker_password = get_setting(&db, "anker_password")
             .map_err(|e| e.to_string())?
             .filter(|s| !s.is_empty());
-        let country = get_setting(&db, "anker_country")
+        let anker_country = get_setting(&db, "anker_country")
             .map_err(|e| e.to_string())?
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "DE".to_string());
-        (email, password, country)
+        let se_api_key = get_setting(&db, "solaredge_api_key")
+            .map_err(|e| e.to_string())?
+            .filter(|s| !s.is_empty());
+        let se_site_id = get_setting(&db, "solaredge_site_id")
+            .map_err(|e| e.to_string())?
+            .filter(|s| !s.is_empty());
+        (vendor, anker_email, anker_password, anker_country, se_api_key, se_site_id)
     };
 
-    let (email, password) = match (email, password) {
-        (Some(e), Some(p)) => (e, p),
-        _ => {
-            return Err(
-                "Anker-Login fehlt. Hinterlege Email + Passwort unter \
-                 Einstellungen → Anker-Cloud-Zugang."
-                    .into(),
-            );
-        }
-    };
-
-    let mut cmd = resolve_sidecar()?;
+    let spec = spec_for(&vendor)?;
+    let mut cmd = resolve_sidecar(&spec)?;
     cmd.args(["--von", &von, "--bis", &bis])
-        .env("ANKER_EMAIL", &email)
-        .env("ANKER_PASSWORD", &password)
-        .env("ANKER_COUNTRY", &country)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+
+    // Vendor-spezifische ENV — fehlende Credentials abfangen bevor Sidecar
+    // startet, damit der User eine klare Meldung statt Stack-Trace bekommt.
+    match vendor.as_str() {
+        "anker" => {
+            let (email, password) = match (anker_email, anker_password) {
+                (Some(e), Some(p)) => (e, p),
+                _ => {
+                    return Err(
+                        "Anker-Login fehlt. Hinterlege Email + Passwort unter \
+                         Einstellungen → Hersteller-API."
+                            .into(),
+                    );
+                }
+            };
+            cmd.env("ANKER_EMAIL", email)
+                .env("ANKER_PASSWORD", password)
+                .env("ANKER_COUNTRY", anker_country);
+        }
+        "solaredge" => {
+            let (api_key, site_id) = match (se_api_key, se_site_id) {
+                (Some(k), Some(s)) => (k, s),
+                _ => {
+                    return Err(
+                        "SolarEdge-Zugang fehlt. Hinterlege API-Key + Site-ID \
+                         unter Einstellungen → Hersteller-API."
+                            .into(),
+                    );
+                }
+            };
+            cmd.env("SOLAREDGE_API_KEY", api_key)
+                .env("SOLAREDGE_SITE_ID", site_id);
+        }
+        _ => unreachable!("spec_for hat bereits validiert"),
+    };
 
     let mut child = cmd
         .spawn()

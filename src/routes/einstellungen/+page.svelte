@@ -19,6 +19,7 @@
     StromtarifPeriode,
     UstModus,
     UstPeriode,
+    VendorKind,
     VerguetungPeriode,
   } from "$lib/types";
   import { centsToEuro, euroToCents, todayISO, formatDateDE } from "$lib/utils";
@@ -44,9 +45,12 @@
   let satzProzent = $state(19);
   let evPreis = $state(0.2);
   let bezugPreis = $state(0.35);
+  let vendor = $state<VendorKind>("none");
   let ankerEmail = $state("");
   let ankerPassword = $state("");
   let ankerCountry = $state("DE");
+  let seApiKey = $state("");
+  let seSiteId = $state("");
 
   async function reload() {
     try {
@@ -61,9 +65,12 @@
       satzProzent = settings.ust_satz_regel * 100;
       evPreis = settings.eigenverbrauch_preis;
       bezugPreis = settings.strom_bezugspreis;
+      vendor = settings.vendor || "none";
       ankerEmail = settings.anker_email ?? "";
       ankerPassword = settings.anker_password ?? "";
       ankerCountry = settings.anker_country || "DE";
+      seApiKey = settings.solaredge_api_key ?? "";
+      seSiteId = settings.solaredge_site_id ?? "";
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     }
@@ -160,9 +167,12 @@
       settings.ust_satz_regel = satzProzent / 100;
       settings.eigenverbrauch_preis = evPreis;
       settings.strom_bezugspreis = bezugPreis;
+      settings.vendor = vendor;
       settings.anker_email = ankerEmail.trim() || null;
       settings.anker_password = ankerPassword.trim() || null;
       settings.anker_country = (ankerCountry.trim() || "DE").toUpperCase();
+      settings.solaredge_api_key = seApiKey.trim() || null;
+      settings.solaredge_site_id = seSiteId.trim() || null;
       settings.ust_perioden = [...settings.ust_perioden].sort(byDate);
       settings.betreiber_perioden = [...settings.betreiber_perioden].sort(byDate);
       settings.verguetung_perioden = [...settings.verguetung_perioden].sort(byDate);
@@ -389,47 +399,95 @@
 
     <Card>
       <CardHeader
-        title="Anker-Cloud-Zugang"
-        description="Login für den Tagesdaten-Import auf /erfassung. Inoffizielle API — empfohlen: separater Anker-Account, als Mitglied zur Anlage eingeladen."
+        title="Hersteller-API"
+        description="Quelle für den Tagesdaten-Import auf /erfassung. Nur die Felder des gewählten Adapters werden verwendet."
       />
-      <div class="grid grid-cols-1 gap-4 px-5 py-5 md:grid-cols-3">
-        <div class="space-y-1.5">
-          <Label>Anker-Account-Email</Label>
-          <Input
-            type="email"
-            bind:value={ankerEmail}
-            placeholder="pv-readonly@beispiel.de"
-            autocomplete="off"
-          />
-        </div>
-        <div class="space-y-1.5">
-          <Label>Anker-Passwort</Label>
-          <Input
-            type="password"
-            bind:value={ankerPassword}
-            placeholder="••••••"
-            autocomplete="new-password"
-          />
-        </div>
-        <div class="space-y-1.5">
-          <Label>Land (ISO-Code)</Label>
-          <Input
-            bind:value={ankerCountry}
-            placeholder="DE"
-            maxlength={2}
-          />
-          <p class="text-xs text-[var(--tr-text-dim)]">
-            DE/AT/CH → EU-Endpoint, US/etc. → Global-Endpoint.
-          </p>
-        </div>
+      <div class="px-5 pt-5">
+        <Label>API-Adapter</Label>
+        <Select
+          bind:value={vendor as unknown as string}
+          options={[
+            { value: "none", label: "Keiner (nur manuell)" },
+            { value: "anker", label: "Anker Solix Cloud (inoffiziell)" },
+            { value: "solaredge", label: "SolarEdge (mySolarEdge, offiziell)" },
+          ]}
+        />
       </div>
-      <div
-        class="border-t border-[var(--tr-line)] px-5 py-3 text-xs text-[var(--tr-text-dim)]"
-      >
-        Achtung: Anker erlaubt nur eine aktive Session pro Account — die Haupt-
-        Handy-App fliegt sonst raus. Empfohlen: Zweit-Account anlegen und in
-        der Anker-App als „Mitglied" zur Anlage einladen.
-      </div>
+
+      {#if vendor === "anker"}
+        <div class="grid grid-cols-1 gap-4 px-5 py-5 md:grid-cols-3">
+          <div class="space-y-1.5">
+            <Label>Anker-Account-Email</Label>
+            <Input
+              type="email"
+              bind:value={ankerEmail}
+              placeholder="pv-readonly@beispiel.de"
+              autocomplete="off"
+            />
+          </div>
+          <div class="space-y-1.5">
+            <Label>Anker-Passwort</Label>
+            <Input
+              type="password"
+              bind:value={ankerPassword}
+              placeholder="••••••"
+              autocomplete="new-password"
+            />
+          </div>
+          <div class="space-y-1.5">
+            <Label>Land (ISO-Code)</Label>
+            <Input
+              bind:value={ankerCountry}
+              placeholder="DE"
+              maxlength={2}
+            />
+            <p class="text-xs text-[var(--tr-text-dim)]">
+              DE/AT/CH → EU-Endpoint, US/etc. → Global-Endpoint.
+            </p>
+          </div>
+        </div>
+        <div
+          class="border-t border-[var(--tr-line)] px-5 py-3 text-xs text-[var(--tr-text-dim)]"
+        >
+          Achtung: Anker erlaubt nur eine aktive Session pro Account — die Haupt-
+          Handy-App fliegt sonst raus. Empfohlen: Zweit-Account anlegen und in
+          der Anker-App als „Mitglied" zur Anlage einladen.
+        </div>
+      {:else if vendor === "solaredge"}
+        <div class="grid grid-cols-1 gap-4 px-5 py-5 md:grid-cols-2">
+          <div class="space-y-1.5">
+            <Label>API-Key</Label>
+            <Input
+              type="password"
+              bind:value={seApiKey}
+              placeholder="••••••"
+              autocomplete="off"
+            />
+            <p class="text-xs text-[var(--tr-text-dim)]">
+              monitoring.solaredge.com → Admin → Site Access → API-Key.
+            </p>
+          </div>
+          <div class="space-y-1.5">
+            <Label>Site-ID</Label>
+            <Input bind:value={seSiteId} placeholder="z. B. 1234567" />
+            <p class="text-xs text-[var(--tr-text-dim)]">
+              Sichtbar in der URL des Monitoring-Portals nach /site/.
+            </p>
+          </div>
+        </div>
+        <div
+          class="border-t border-[var(--tr-line)] px-5 py-3 text-xs text-[var(--tr-text-dim)]"
+        >
+          Offizielle REST-API (max. 300 Requests / Tag). Eigenverbrauch /
+          Einspeisung / Netzbezug nur verfügbar wenn ein Smart Meter oder
+          Modbus-Energiezähler im SolarEdge-System gemeldet ist.
+        </div>
+      {:else}
+        <div class="px-5 py-5 text-sm text-[var(--tr-text-dim)]">
+          Kein Hersteller-API aktiv — der Import-Button auf /erfassung ist deaktiviert.
+          Tagesdaten manuell erfassen oder einen Adapter auswählen.
+        </div>
+      {/if}
     </Card>
 
     <div class="flex items-center gap-3">

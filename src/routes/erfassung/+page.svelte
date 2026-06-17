@@ -4,11 +4,12 @@
   import {
     deleteDaily,
     getDaily,
+    getSettings,
     importFromVendor,
     listDailyRange,
     upsertDaily,
   } from "$lib/api";
-  import type { DailyProduction } from "$lib/types";
+  import type { DailyProduction, VendorKind } from "$lib/types";
   import { formatDateDE, formatKWh, todayISO } from "$lib/utils";
   import Card from "$lib/components/ui/Card.svelte";
   import CardHeader from "$lib/components/ui/CardHeader.svelte";
@@ -47,6 +48,13 @@
   let existingInPeriod = $state(0);
   let busy = $state(false);
   let toast = $state<{ kind: "ok" | "err"; text: string } | null>(null);
+  let vendor = $state<VendorKind>("none");
+
+  const VENDOR_LABELS: Record<VendorKind, string> = {
+    none: "kein API",
+    anker: "Anker",
+    solaredge: "SolarEdge",
+  };
 
   // Sidecar-Import-Status: Startzeit (epoch ms) wenn ein Import laeuft, sonst
   // null. `importElapsed` wird per Effect alle 500ms aktualisiert, damit der
@@ -213,7 +221,15 @@
     return Math.round(v * 10) / 10;
   }
 
-  onMount(loadRecent);
+  onMount(async () => {
+    await loadRecent();
+    try {
+      const s = await getSettings();
+      vendor = (s.vendor as VendorKind) ?? "none";
+    } catch {
+      vendor = "none";
+    }
+  });
 
   $effect(() => {
     // Re-load when the chosen period changes. Read all relevant state up-front
@@ -374,10 +390,13 @@
         Manuelle Eingabe als Tag, Monat oder Jahr — oder Import aus Hersteller-API.
       </p>
     </div>
-    <Button variant="ghost" onclick={tryImport} disabled={busy}
-      title="Importiert Anker-Cloud-Tageswerte fuer den unten gewaehlten Zeitraum. Heute/gestern liefert Anker oft noch keine finale Tagessumme — die Tage muessen ggf. spaeter nachgeholt werden.">
+    <Button variant="ghost" onclick={tryImport}
+      disabled={busy || vendor === "none"}
+      title={vendor === "none"
+        ? "Kein Hersteller-API ausgewaehlt. Aktiviere Anker oder SolarEdge unter Einstellungen → Hersteller-API."
+        : "Importiert Tageswerte fuer den unten gewaehlten Zeitraum. Heute/gestern liefert die API oft noch keine finale Tagessumme — diese Tage ggf. spaeter nachholen."}>
       <CloudDownloadIcon class="size-4" />
-      API-Import ({periodLabel})
+      API-Import ({VENDOR_LABELS[vendor]} · {periodLabel})
     </Button>
   </div>
 

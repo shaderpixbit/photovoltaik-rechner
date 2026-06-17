@@ -198,6 +198,20 @@ pub(crate) fn seed_defaults(conn: &Connection) -> Result<(), rusqlite::Error> {
         "INSERT OR IGNORE INTO settings (key, value) VALUES ('eigenverbrauch_preis', '0.20')",
         [],
     )?;
+    // Vendor-Wahl: Migration fuer Bestandsnutzer — wenn anker_email schon
+    // gesetzt ist, default auf "anker", sonst "none".
+    let prior_email: String = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'anker_email'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or_default();
+    let default_vendor = if prior_email.is_empty() { "none" } else { "anker" };
+    conn.execute(
+        "INSERT OR IGNORE INTO settings (key, value) VALUES ('vendor', ?1)",
+        params![default_vendor],
+    )?;
     conn.execute(
         "INSERT OR IGNORE INTO settings (key, value) VALUES ('anker_email', '')",
         [],
@@ -208,6 +222,14 @@ pub(crate) fn seed_defaults(conn: &Connection) -> Result<(), rusqlite::Error> {
     )?;
     conn.execute(
         "INSERT OR IGNORE INTO settings (key, value) VALUES ('anker_country', 'DE')",
+        [],
+    )?;
+    conn.execute(
+        "INSERT OR IGNORE INTO settings (key, value) VALUES ('solaredge_api_key', '')",
+        [],
+    )?;
+    conn.execute(
+        "INSERT OR IGNORE INTO settings (key, value) VALUES ('solaredge_site_id', '')",
         [],
     )?;
     // Alte URL/Token-Keys aus dem Stub aufraeumen, falls noch vorhanden.
