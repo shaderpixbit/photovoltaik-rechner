@@ -47,6 +47,32 @@
   let busy = $state(false);
   let toast = $state<{ kind: "ok" | "err"; text: string } | null>(null);
 
+  // Sidecar-Import-Status: Startzeit (epoch ms) wenn ein Import laeuft, sonst
+  // null. `importElapsed` wird per Effect alle 500ms aktualisiert, damit der
+  // Timer in der UI zaehlt — ohne dass wir auf jeden Tick Re-Renders der
+  // Eingabe-Felder ausloesen.
+  let importStartedAt = $state<number | null>(null);
+  let importElapsedSec = $state(0);
+  let importEstSec = $state(0);
+
+  $effect(() => {
+    if (importStartedAt === null) {
+      importElapsedSec = 0;
+      return;
+    }
+    const started = importStartedAt;
+    const handle = setInterval(() => {
+      importElapsedSec = Math.floor((Date.now() - started) / 1000);
+    }, 500);
+    return () => clearInterval(handle);
+  });
+
+  function formatDuration(sec: number): string {
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${m}:${String(s).padStart(2, "0")}`;
+  }
+
   function showToast(kind: "ok" | "err", text: string) {
     toast = { kind, text };
     setTimeout(() => (toast = null), 3500);
@@ -270,23 +296,26 @@
       showToast("err", "Ungueltiger Zeitraum.");
       return;
     }
-    // Anker macht 2 API-Calls pro Tag mit 0.4s sleep -> ca. 1s pro Tag.
-    // Bei langen Ranges Bestaetigung einholen, damit der User nicht denkt
-    // der Button haengt.
+    // Sidecar nutzt 7-Tages-Chunks mit 2 API-Calls + 0.4s sleep pro Chunk.
+    // Pro Chunk ~2.5s (Sleep + HTTP). Plus ~3s Login-Overhead.
     const days = periodDays().length;
+    const chunks = Math.ceil(days / 7);
+    const estSec = chunks * 2 + 3;
     if (
       days > 31 &&
       !confirm(
-        `Import von ${days} Tagen (${r.from} bis ${r.to}) — Anker ` +
-          `braucht ca. ${Math.ceil(days * 1.0)} Sekunden plus Anmeldung. Fortfahren?`,
+        `Import von ${days} Tagen (${r.from} bis ${r.to}) in ${chunks} ` +
+          `Wochen-Chunks — ca. ${formatDuration(estSec)} min Laufzeit. Fortfahren?`,
       )
     ) {
       return;
     }
     busy = true;
+    importStartedAt = Date.now();
+    importEstSec = estSec;
     try {
       const res = await importFromVendor(r.from, r.to);
-      let msg = `${res.imported} Tage importiert`;
+      let msg = `${res.imported} Tage importiert in ${formatDuration(importElapsedSec)}`;
       if (res.skipped > 0) msg += `, ${res.skipped} uebersprungen`;
       if (res.warnings.length > 0) msg += ` (${res.warnings.length} Hinweise)`;
       showToast(res.errors.length > 0 ? "err" : "ok", msg);
@@ -296,6 +325,7 @@
       showToast("err", e instanceof Error ? e.message : String(e));
     } finally {
       busy = false;
+      importStartedAt = null;
     }
   }
 
@@ -319,6 +349,38 @@
       API-Import ({periodLabel})
     </Button>
   </div>
+
+  {#if importStartedAt !== null}
+    {@const pct = importEstSec > 0
+      ? Math.min(99, Math.round((importElapsedSec / importEstSec) * 100))
+      : 0}
+    <Card>
+      <div class="px-5 py-4">
+        <div class="flex items-center justify-between text-sm">
+          <span class="font-medium">
+            <span class="inline-block size-2 animate-pulse rounded-full"
+              style="background: var(--tr-sun);"></span>
+            Anker-Cloud-Import laeuft…
+          </span>
+          <span class="font-mono text-[var(--tr-text-dim)]">
+            {formatDuration(importElapsedSec)} / ~{formatDuration(importEstSec)}
+          </span>
+        </div>
+        <div class="mt-2 h-1.5 w-full overflow-hidden rounded-full"
+          style="background: var(--tr-surface2);">
+          <div
+            class="h-full transition-all duration-500"
+            style="width: {pct}%; background: var(--tr-sun);"
+          ></div>
+        </div>
+        <p class="mt-2 text-xs text-[var(--tr-text-faint)]">
+          Sidecar holt Tageswerte in 7-Tages-Chunks (2 Calls je Chunk, 0.4s
+          Pause wegen Anker-Rate-Limit). Lange Importe blockieren die UI nicht
+          dauerhaft — der Browser kann diese Seite normal weiterbenutzen.
+        </p>
+      </div>
+    </Card>
+  {/if}
 
   <Card>
     <CardHeader

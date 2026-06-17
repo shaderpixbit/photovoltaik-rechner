@@ -6,6 +6,12 @@ holt fuer den Zeitraum [--von, --bis] (ISO YYYY-MM-DD) die Energie-Tageswerte
 ueber die inoffizielle Anker-Solix-Cloud-API und schreibt eine JSON-Antwort
 auf stdout. Fehler gehen auf stderr und exit code != 0.
 
+Performance: chunked nach Wochen-Bloecken (max. 7 Tage pro API-Call). Das
+liefert die Tageswerte fuer eine ganze Woche in einem einzigen
+`energy_analysis(rangeType="week")`-Call. Pro Wochen-Chunk werden 2 Calls
+benoetigt (solar_production + grid). Fuer ein Jahr also ca. 106 Calls statt
+730 — bei 0.4s sleep ca. 45s statt 5 Min.
+
 Ausgabe-Schema (stdout, eine Zeile JSON):
     {
       "rows": [
@@ -58,9 +64,11 @@ except ImportError as exc:
 
 
 # Pause zwischen API-Calls — Anker hat Rate-Limits, die Community empfiehlt
-# pro Account hoechstens alle paar Sekunden eine Anfrage. Bei 31 Tagen *
-# 2 Calls = 62 Aufrufe sind 0.4s konservativ.
+# bei 7-Tages-Chunks 0.4s konservativ.
 _CALL_DELAY_S = 0.4
+# Anker akzeptiert mit rangeType="week" Range-Queries; 7 Tage pro Block ist
+# das was die thomluther-Lib selbst nutzt (siehe energy_daily()).
+_CHUNK_DAYS = 7
 
 
 def _parse_iso(s: str) -> date:
@@ -72,11 +80,16 @@ def _to_dt(d: date) -> datetime:
     return datetime(d.year, d.month, d.day)
 
 
-def _daterange(von: date, bis: date) -> list[date]:
+def _chunks(von: date, bis: date, step: int) -> list[tuple[date, date]]:
     if bis < von:
         raise ValueError("--bis liegt vor --von")
-    days = (bis - von).days + 1
-    return [von + timedelta(days=i) for i in range(days)]
+    out: list[tuple[date, date]] = []
+    cur = von
+    while cur <= bis:
+        end = min(cur + timedelta(days=step - 1), bis)
+        out.append((cur, end))
+        cur = end + timedelta(days=1)
+    return out
 
 
 def _kwh(value: Any, power_unit: str | None = None) -> float:
@@ -104,25 +117,31 @@ def _pick_first_site(sites: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     return site_id, sites[site_id]
 
 
-async def _energy_for_day(
-    api: AnkerSolixApi,
-    site_id: str,
-    day: date,
-    dev_type: str,
-) -> dict[str, Any]:
-    """Eine `energy_analysis`-Antwort fuer einen einzelnen Tag (Range = 1 Tag).
-    Damit liefert die Anker-API alle `*_total`-Felder als Tageswerte.
+def _index_by_day(items: list[Any], unit: str | None) -> dict[str, float]:
+    """power[] / charge_trend[] -> {"YYYY-MM-DD": kwh}.
+
+    Anker liefert die Werte teils mit Minus-Vorzeichen (z.B. solar_to_grid im
+    grid-Response). Wir nehmen den absoluten Betrag — die Richtung steckt im
+    Feldnamen, nicht im Vorzeichen.
     """
-    dt = _to_dt(day)
-    payload = await api.energy_analysis(
-        siteId=site_id,
-        deviceSn="",
-        rangeType="day",
-        startDay=dt,
-        endDay=dt,
-        devType=dev_type,
-    )
-    return payload if isinstance(payload, dict) else {}
+    out: dict[str, float] = {}
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        t = item.get("time")
+        if not t:
+            continue
+        day = str(t)[:10]
+        out[day] = abs(_kwh(item.get("value"), unit))
+    return out
+
+
+def _progress(msg: str) -> None:
+    """Best-effort Progress auf stderr (ein Zeile pro Event). Rust kann
+    optional darauf hoeren und an die UI weiterreichen; failt es nicht,
+    kostet es nur ein paar Bytes.
+    """
+    print(json.dumps({"progress": msg}), file=sys.stderr, flush=True)
 
 
 async def _collect(
@@ -133,53 +152,105 @@ async def _collect(
     bis: date,
 ) -> dict[str, Any]:
     warnings: list[str] = []
+    chunks = _chunks(von, bis, _CHUNK_DAYS)
+    total_calls = len(chunks) * 2
+    done_calls = 0
+
     async with ClientSession() as session:
         api = AnkerSolixApi(email, password, country, session, logging.getLogger("anker"))
-
-        # Sites laden — `update_sites` triggert auch das Login wenn noch nicht erfolgt.
+        _progress(f"Login Anker-Cloud ({email[:3]}***)")
         await api.update_sites()
         site_id, _site = _pick_first_site(api.sites)
+        _progress(f"Anlage: {site_id} — {len(chunks)} Wochen-Chunks ({total_calls} Calls)")
 
-        result_rows: list[dict[str, Any]] = []
-        for d in _daterange(von, bis):
-            iso = d.isoformat()
+        # Pro Chunk zwei Calls — solar_production + grid. Mit rangeType="week"
+        # liefert Anker daily values im `power[]` Array fuer den ganzen Chunk.
+        per_day_erz: dict[str, float] = {}
+        per_day_ein: dict[str, float] = {}
+        per_day_net: dict[str, float] = {}
+
+        for idx, (c_von, c_bis) in enumerate(chunks, start=1):
             try:
-                sol = await _energy_for_day(api, site_id, d, "solar_production")
-                await asyncio.sleep(_CALL_DELAY_S)
-                grid = await _energy_for_day(api, site_id, d, "grid")
-                await asyncio.sleep(_CALL_DELAY_S)
+                sol = await api.energy_analysis(
+                    siteId=site_id,
+                    deviceSn="",
+                    rangeType="week",
+                    startDay=_to_dt(c_von),
+                    endDay=_to_dt(c_bis),
+                    devType="solar_production",
+                )
             except Exception as exc:  # noqa: BLE001
-                warnings.append(f"{iso}: API-Fehler {type(exc).__name__}: {exc}")
-                continue
+                warnings.append(
+                    f"{c_von}..{c_bis}: solar_production fehlgeschlagen "
+                    f"({type(exc).__name__}: {exc})"
+                )
+                sol = {}
+            done_calls += 1
+            _progress(f"Chunk {idx}/{len(chunks)}: solar_production OK ({done_calls}/{total_calls})")
+            await asyncio.sleep(_CALL_DELAY_S)
 
-            sol_unit = sol.get("power_unit")
-            grid_unit = grid.get("power_unit")
+            try:
+                grid = await api.energy_analysis(
+                    siteId=site_id,
+                    deviceSn="",
+                    rangeType="week",
+                    startDay=_to_dt(c_von),
+                    endDay=_to_dt(c_bis),
+                    devType="grid",
+                )
+            except Exception as exc:  # noqa: BLE001
+                warnings.append(
+                    f"{c_von}..{c_bis}: grid fehlgeschlagen "
+                    f"({type(exc).__name__}: {exc})"
+                )
+                grid = {}
+            done_calls += 1
+            _progress(f"Chunk {idx}/{len(chunks)}: grid OK ({done_calls}/{total_calls})")
+            await asyncio.sleep(_CALL_DELAY_S)
 
-            erzeugung = _kwh(sol.get("solar_total"), sol_unit)
-            einspeisung = _kwh(sol.get("solar_to_grid_total"), sol_unit)
-            eigenverbrauch = _kwh(sol.get("solar_to_home_total"), sol_unit)
-            netzbezug = _kwh(grid.get("grid_to_home_total"), grid_unit)
+            if isinstance(sol, dict):
+                per_day_erz.update(
+                    _index_by_day(sol.get("power") or [], sol.get("power_unit"))
+                )
+            if isinstance(grid, dict):
+                # grid: power[] = daily solar_to_grid (negative), charge_trend[] = daily grid_to_home
+                per_day_ein.update(
+                    _index_by_day(grid.get("power") or [], grid.get("power_unit"))
+                )
+                per_day_net.update(
+                    _index_by_day(
+                        grid.get("charge_trend") or [], grid.get("charge_unit")
+                    )
+                )
 
-            # Manche Solarbank-Modelle geben `solar_to_home_total` leer zurueck.
-            # Fallback: Erzeugung - Einspeisung (vorausgesetzt kein Batterie-
-            # Eigenverbrauch, der separat ueber `battery_to_home` laeuft).
-            if eigenverbrauch <= 0 and erzeugung > 0:
-                eigenverbrauch = max(0.0, erzeugung - einspeisung)
-
-            if erzeugung == 0 and einspeisung == 0 and netzbezug == 0:
+        # Tabellarisch zusammenfuegen, eigenverbrauch berechnen.
+        result_rows: list[dict[str, Any]] = []
+        cur = von
+        while cur <= bis:
+            iso = cur.isoformat()
+            erz = per_day_erz.get(iso, 0.0)
+            ein = per_day_ein.get(iso, 0.0)
+            net = per_day_net.get(iso, 0.0)
+            if erz <= 0 and ein <= 0 and net <= 0:
                 warnings.append(f"{iso}: alle Werte 0 — vermutlich kein Datensatz.")
+                cur += timedelta(days=1)
                 continue
-
+            # Eigenverbrauch = Erzeugung - Einspeisung (auf Tages-Ebene fuer
+            # Systeme ohne Batterie exakt; mit Batterie naeherungsweise korrekt,
+            # weil sich Lade/Entlade-Zyklen innerhalb des Tages aufheben).
+            ev = max(0.0, erz - ein)
             result_rows.append(
                 {
                     "date": iso,
-                    "erzeugung_kwh": round(erzeugung, 3),
-                    "eigenverbrauch_kwh": round(eigenverbrauch, 3),
-                    "einspeisung_kwh": round(einspeisung, 3),
-                    "netzbezug_kwh": round(netzbezug, 3),
+                    "erzeugung_kwh": round(erz, 3),
+                    "eigenverbrauch_kwh": round(ev, 3),
+                    "einspeisung_kwh": round(ein, 3),
+                    "netzbezug_kwh": round(net, 3),
                 }
             )
+            cur += timedelta(days=1)
 
+        _progress(f"Fertig: {len(result_rows)} Tage")
         return {
             "rows": result_rows,
             "site_id": site_id,
