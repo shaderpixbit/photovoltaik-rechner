@@ -7,7 +7,9 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use tauri::{command, State};
 
-use crate::db::{get_cents, get_cents_opt, get_setting, get_setting_f64, set_setting, DbState};
+use crate::db::{
+    get_cents, get_cents_opt, get_setting, get_setting_f64, seed_defaults, set_setting, DbState,
+};
 use crate::types::{Asset, DailyProduction, Expense, Payout, Settings};
 use crate::verlauf::{
     load_betreiber_perioden, load_perioden, load_stromtarif_perioden, load_verguetung_perioden,
@@ -24,7 +26,8 @@ pub fn list_daily_range(
     let db = state.0.lock().map_err(|e| e.to_string())?;
     let mut stmt = db
         .prepare(
-            "SELECT date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh, notiz
+            "SELECT date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh,
+                    speicher_laden_kwh, speicher_entladen_kwh, notiz
              FROM daily_production
              WHERE date BETWEEN ?1 AND ?2
              ORDER BY date ASC",
@@ -38,7 +41,9 @@ pub fn list_daily_range(
                 eigenverbrauch_kwh: r.get(2)?,
                 einspeisung_kwh: r.get(3)?,
                 netzbezug_kwh: r.get(4)?,
-                notiz: r.get(5)?,
+                speicher_laden_kwh: r.get(5)?,
+                speicher_entladen_kwh: r.get(6)?,
+                notiz: r.get(7)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -54,7 +59,8 @@ pub fn get_daily(
 ) -> Result<Option<DailyProduction>, String> {
     let db = state.0.lock().map_err(|e| e.to_string())?;
     db.query_row(
-        "SELECT date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh, notiz
+        "SELECT date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh,
+                speicher_laden_kwh, speicher_entladen_kwh, notiz
          FROM daily_production WHERE date = ?1",
         params![date],
         |r| {
@@ -64,7 +70,9 @@ pub fn get_daily(
                 eigenverbrauch_kwh: r.get(2)?,
                 einspeisung_kwh: r.get(3)?,
                 netzbezug_kwh: r.get(4)?,
-                notiz: r.get(5)?,
+                speicher_laden_kwh: r.get(5)?,
+                speicher_entladen_kwh: r.get(6)?,
+                notiz: r.get(7)?,
             })
         },
     )
@@ -77,13 +85,16 @@ pub fn upsert_daily(state: State<DbState>, entry: DailyProduction) -> Result<(),
     let db = state.0.lock().map_err(|e| e.to_string())?;
     db.execute(
         "INSERT INTO daily_production
-         (date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh, notiz)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         (date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh,
+          speicher_laden_kwh, speicher_entladen_kwh, notiz)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
          ON CONFLICT(date) DO UPDATE SET
             erzeugung_kwh = excluded.erzeugung_kwh,
             eigenverbrauch_kwh = excluded.eigenverbrauch_kwh,
             einspeisung_kwh = excluded.einspeisung_kwh,
             netzbezug_kwh = excluded.netzbezug_kwh,
+            speicher_laden_kwh = excluded.speicher_laden_kwh,
+            speicher_entladen_kwh = excluded.speicher_entladen_kwh,
             notiz = excluded.notiz",
         params![
             entry.date,
@@ -91,6 +102,8 @@ pub fn upsert_daily(state: State<DbState>, entry: DailyProduction) -> Result<(),
             entry.eigenverbrauch_kwh,
             entry.einspeisung_kwh,
             entry.netzbezug_kwh,
+            entry.speicher_laden_kwh,
+            entry.speicher_entladen_kwh,
             entry.notiz
         ],
     )
@@ -373,6 +386,82 @@ pub fn delete_asset(state: State<DbState>, id: i64) -> Result<(), String> {
     Ok(())
 }
 
+// ── DB-Wipe ─────────────────────────────────────────────────────────────────
+
+/// Zaehlt alle Datensaetze pro Tabelle nach dem Wipe (sollte 0 sein) und
+/// gibt eine kurze Zusammenfassung zurueck — fuer den Toast in der UI.
+#[derive(serde::Serialize)]
+pub struct WipeSummary {
+    pub deleted_daily: i64,
+    pub deleted_payouts: i64,
+    pub deleted_expenses: i64,
+    pub deleted_assets: i64,
+    pub deleted_verlauf_eintraege: i64,
+}
+
+/// Loescht ALLE Nutzdaten aus der DB. Schema bleibt erhalten (`CREATE TABLE`
+/// laeuft beim naechsten App-Start nicht erneut, Spalten/Indizes bleiben).
+/// Settings + Verlaufstabellen werden via `seed_defaults` neu initialisiert,
+/// damit die App nicht in einen inkonsistenten Zustand laeuft.
+///
+/// Achtung: irreversibel. Ein `confirmation_token = "WIPE"` ist erforderlich,
+/// damit nicht versehentlich ueber JS-Konsole oder Bug ausgeloest werden kann.
+#[command]
+pub fn wipe_database(
+    state: State<DbState>,
+    confirmation_token: String,
+) -> Result<WipeSummary, String> {
+    if confirmation_token != "WIPE" {
+        return Err(
+            "Ungueltiges Confirmation-Token. Erwartet: 'WIPE' (uppercase).".into(),
+        );
+    }
+    let mut db = state.0.lock().map_err(|e| e.to_string())?;
+
+    // Counts vorher merken — fuer den UI-Toast.
+    let count = |conn: &Connection, table: &str| -> i64 {
+        conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap_or(0)
+    };
+    let before_daily = count(&db, "daily_production");
+    let before_payouts = count(&db, "payouts");
+    let before_expenses = count(&db, "expenses");
+    let before_assets = count(&db, "assets");
+    let before_verlauf = count(&db, "ust_perioden")
+        + count(&db, "betreiber_perioden")
+        + count(&db, "verguetung_perioden")
+        + count(&db, "stromtarif_perioden");
+
+    // Alles in einer Transaktion loeschen.
+    let tx = db.transaction().map_err(|e| e.to_string())?;
+    for table in [
+        "daily_production",
+        "payouts",
+        "expenses",
+        "assets",
+        "ust_perioden",
+        "betreiber_perioden",
+        "verguetung_perioden",
+        "stromtarif_perioden",
+        "settings",
+    ] {
+        tx.execute(&format!("DELETE FROM {table}"), [])
+            .map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+
+    // Defaults wieder anlegen, damit get_settings() etc. nicht failen.
+    seed_defaults(&db).map_err(|e| e.to_string())?;
+
+    Ok(WipeSummary {
+        deleted_daily: before_daily,
+        deleted_payouts: before_payouts,
+        deleted_expenses: before_expenses,
+        deleted_assets: before_assets,
+        deleted_verlauf_eintraege: before_verlauf,
+    })
+}
+
 // ── Settings ────────────────────────────────────────────────────────────────
 
 #[command]
@@ -382,10 +471,24 @@ pub fn get_settings(state: State<DbState>) -> Result<Settings, String> {
     let betreiber_perioden = load_betreiber_perioden(&db).map_err(|e| e.to_string())?;
     let verguetung_perioden = load_verguetung_perioden(&db).map_err(|e| e.to_string())?;
     let stromtarif_perioden = load_stromtarif_perioden(&db).map_err(|e| e.to_string())?;
-    let url = get_setting(&db, "anker_api_url")
+    let vendor = get_setting(&db, "vendor")
+        .map_err(|e| e.to_string())?
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "none".to_string());
+    let email = get_setting(&db, "anker_email")
         .map_err(|e| e.to_string())?
         .filter(|s| !s.is_empty());
-    let token = get_setting(&db, "anker_api_token")
+    let password = get_setting(&db, "anker_password")
+        .map_err(|e| e.to_string())?
+        .filter(|s| !s.is_empty());
+    let country = get_setting(&db, "anker_country")
+        .map_err(|e| e.to_string())?
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "DE".to_string());
+    let se_api_key = get_setting(&db, "solaredge_api_key")
+        .map_err(|e| e.to_string())?
+        .filter(|s| !s.is_empty());
+    let se_site_id = get_setting(&db, "solaredge_site_id")
         .map_err(|e| e.to_string())?
         .filter(|s| !s.is_empty());
     Ok(Settings {
@@ -396,8 +499,12 @@ pub fn get_settings(state: State<DbState>) -> Result<Settings, String> {
         ust_satz_regel: get_setting_f64(&db, "ust_satz_regel", 0.19),
         eigenverbrauch_preis: get_setting_f64(&db, "eigenverbrauch_preis", 0.20),
         strom_bezugspreis: get_setting_f64(&db, "strom_bezugspreis", 0.35),
-        anker_api_url: url,
-        anker_api_token: token,
+        vendor,
+        anker_email: email,
+        anker_password: password,
+        anker_country: country,
+        solaredge_api_key: se_api_key,
+        solaredge_site_id: se_site_id,
     })
 }
 
@@ -418,16 +525,39 @@ pub fn set_settings(state: State<DbState>, settings: Settings) -> Result<(), Str
         &settings.strom_bezugspreis.to_string(),
     )
     .map_err(|e| e.to_string())?;
+    let vendor = match settings.vendor.as_str() {
+        "anker" | "solaredge" | "none" => settings.vendor.as_str(),
+        _ => "none",
+    };
+    set_setting(&db, "vendor", vendor).map_err(|e| e.to_string())?;
     set_setting(
         &db,
-        "anker_api_url",
-        settings.anker_api_url.as_deref().unwrap_or(""),
+        "anker_email",
+        settings.anker_email.as_deref().unwrap_or(""),
     )
     .map_err(|e| e.to_string())?;
     set_setting(
         &db,
-        "anker_api_token",
-        settings.anker_api_token.as_deref().unwrap_or(""),
+        "anker_password",
+        settings.anker_password.as_deref().unwrap_or(""),
+    )
+    .map_err(|e| e.to_string())?;
+    let country = if settings.anker_country.trim().is_empty() {
+        "DE"
+    } else {
+        settings.anker_country.as_str()
+    };
+    set_setting(&db, "anker_country", country).map_err(|e| e.to_string())?;
+    set_setting(
+        &db,
+        "solaredge_api_key",
+        settings.solaredge_api_key.as_deref().unwrap_or(""),
+    )
+    .map_err(|e| e.to_string())?;
+    set_setting(
+        &db,
+        "solaredge_site_id",
+        settings.solaredge_site_id.as_deref().unwrap_or(""),
     )
     .map_err(|e| e.to_string())?;
 

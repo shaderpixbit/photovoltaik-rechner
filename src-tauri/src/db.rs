@@ -151,6 +151,9 @@ pub(crate) fn create_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
          );",
     )?;
     add_column_if_missing(conn, "daily_production", "netzbezug_kwh", "REAL")?;
+    // Batterie-/Solarbank-Flow (optional, nur fuer Anlagen mit Speicher).
+    add_column_if_missing(conn, "daily_production", "speicher_laden_kwh", "REAL")?;
+    add_column_if_missing(conn, "daily_production", "speicher_entladen_kwh", "REAL")?;
     add_column_if_missing(
         conn,
         "assets",
@@ -198,12 +201,43 @@ pub(crate) fn seed_defaults(conn: &Connection) -> Result<(), rusqlite::Error> {
         "INSERT OR IGNORE INTO settings (key, value) VALUES ('eigenverbrauch_preis', '0.20')",
         [],
     )?;
+    // Vendor-Wahl: Migration fuer Bestandsnutzer — wenn anker_email schon
+    // gesetzt ist, default auf "anker", sonst "none".
+    let prior_email: String = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'anker_email'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or_default();
+    let default_vendor = if prior_email.is_empty() { "none" } else { "anker" };
     conn.execute(
-        "INSERT OR IGNORE INTO settings (key, value) VALUES ('anker_api_url', '')",
+        "INSERT OR IGNORE INTO settings (key, value) VALUES ('vendor', ?1)",
+        params![default_vendor],
+    )?;
+    conn.execute(
+        "INSERT OR IGNORE INTO settings (key, value) VALUES ('anker_email', '')",
         [],
     )?;
     conn.execute(
-        "INSERT OR IGNORE INTO settings (key, value) VALUES ('anker_api_token', '')",
+        "INSERT OR IGNORE INTO settings (key, value) VALUES ('anker_password', '')",
+        [],
+    )?;
+    conn.execute(
+        "INSERT OR IGNORE INTO settings (key, value) VALUES ('anker_country', 'DE')",
+        [],
+    )?;
+    conn.execute(
+        "INSERT OR IGNORE INTO settings (key, value) VALUES ('solaredge_api_key', '')",
+        [],
+    )?;
+    conn.execute(
+        "INSERT OR IGNORE INTO settings (key, value) VALUES ('solaredge_site_id', '')",
+        [],
+    )?;
+    // Alte URL/Token-Keys aus dem Stub aufraeumen, falls noch vorhanden.
+    conn.execute(
+        "DELETE FROM settings WHERE key IN ('anker_api_url', 'anker_api_token')",
         [],
     )?;
     conn.execute(

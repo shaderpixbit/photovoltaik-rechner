@@ -5,7 +5,9 @@
 use chrono::Local;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
-use tauri::{command, State};
+use std::io::{BufRead, BufReader};
+use std::sync::{Arc, Mutex};
+use tauri::{command, AppHandle, Emitter, State};
 
 use crate::crud::list_assets_internal;
 use crate::db::{get_cents, get_setting, get_setting_f64, DbState};
@@ -200,13 +202,24 @@ struct SettingsKV {
     ust_satz_regel: f64,
     eigenverbrauch_preis: f64,
     strom_bezugspreis: f64,
-    anker_api_url: Option<String>,
-    anker_api_token: Option<String>,
+    #[serde(default)]
+    vendor: Option<String>,
+    #[serde(default)]
+    anker_email: Option<String>,
+    #[serde(default)]
+    anker_password: Option<String>,
+    #[serde(default)]
+    anker_country: Option<String>,
+    #[serde(default)]
+    solaredge_api_key: Option<String>,
+    #[serde(default)]
+    solaredge_site_id: Option<String>,
 }
 
 fn collect_backup(conn: &Connection) -> Result<Backup, rusqlite::Error> {
     let mut stmt = conn.prepare(
-        "SELECT date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh, notiz
+        "SELECT date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh,
+                speicher_laden_kwh, speicher_entladen_kwh, notiz
          FROM daily_production ORDER BY date ASC",
     )?;
     let daily: Vec<DailyProduction> = stmt
@@ -217,7 +230,9 @@ fn collect_backup(conn: &Connection) -> Result<Backup, rusqlite::Error> {
                 eigenverbrauch_kwh: r.get(2)?,
                 einspeisung_kwh: r.get(3)?,
                 netzbezug_kwh: r.get(4)?,
-                notiz: r.get(5)?,
+                speicher_laden_kwh: r.get(5)?,
+                speicher_entladen_kwh: r.get(6)?,
+                notiz: r.get(7)?,
             })
         })?
         .filter_map(|r| r.ok())
@@ -274,8 +289,12 @@ fn collect_backup(conn: &Connection) -> Result<Backup, rusqlite::Error> {
         ust_satz_regel: get_setting_f64(conn, "ust_satz_regel", 0.19),
         eigenverbrauch_preis: get_setting_f64(conn, "eigenverbrauch_preis", 0.20),
         strom_bezugspreis: get_setting_f64(conn, "strom_bezugspreis", 0.35),
-        anker_api_url: get_setting(conn, "anker_api_url")?.filter(|s| !s.is_empty()),
-        anker_api_token: get_setting(conn, "anker_api_token")?.filter(|s| !s.is_empty()),
+        vendor: get_setting(conn, "vendor")?.filter(|s| !s.is_empty()),
+        anker_email: get_setting(conn, "anker_email")?.filter(|s| !s.is_empty()),
+        anker_password: get_setting(conn, "anker_password")?.filter(|s| !s.is_empty()),
+        anker_country: get_setting(conn, "anker_country")?.filter(|s| !s.is_empty()),
+        solaredge_api_key: get_setting(conn, "solaredge_api_key")?.filter(|s| !s.is_empty()),
+        solaredge_site_id: get_setting(conn, "solaredge_site_id")?.filter(|s| !s.is_empty()),
     };
 
     Ok(Backup {
@@ -561,15 +580,39 @@ pub fn import_backup(state: State<DbState>, path: String) -> Result<BackupSummar
     )
     .map_err(|e| e.to_string())?;
     tx.execute(
-        "INSERT INTO settings (key, value) VALUES ('anker_api_url', ?1)
+        "INSERT INTO settings (key, value) VALUES ('vendor', ?1)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        params![s.anker_api_url.clone().unwrap_or_default()],
+        params![s.vendor.clone().unwrap_or_else(|| "none".to_string())],
     )
     .map_err(|e| e.to_string())?;
     tx.execute(
-        "INSERT INTO settings (key, value) VALUES ('anker_api_token', ?1)
+        "INSERT INTO settings (key, value) VALUES ('anker_email', ?1)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        params![s.anker_api_token.clone().unwrap_or_default()],
+        params![s.anker_email.clone().unwrap_or_default()],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO settings (key, value) VALUES ('anker_password', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![s.anker_password.clone().unwrap_or_default()],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO settings (key, value) VALUES ('anker_country', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![s.anker_country.clone().unwrap_or_else(|| "DE".to_string())],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO settings (key, value) VALUES ('solaredge_api_key', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![s.solaredge_api_key.clone().unwrap_or_default()],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO settings (key, value) VALUES ('solaredge_site_id', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![s.solaredge_site_id.clone().unwrap_or_default()],
     )
     .map_err(|e| e.to_string())?;
 
@@ -583,34 +626,412 @@ pub fn import_backup(state: State<DbState>, path: String) -> Result<BackupSummar
     })
 }
 
-// ── Vendor-API Import (Stub) ────────────────────────────────────────────────
+// ── Vendor-API Import (Anker Solix Cloud via Python-Sidecar) ────────────────
 
 #[derive(Serialize)]
 pub struct ImportResult {
     pub imported: i64,
+    pub skipped: i64,
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+    pub site_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SidecarRow {
+    date: String,
+    erzeugung_kwh: f64,
+    eigenverbrauch_kwh: f64,
+    einspeisung_kwh: f64,
+    #[serde(default)]
+    netzbezug_kwh: Option<f64>,
+    /// Solar -> Akku — nur fuer Anlagen mit Speicher (Anker Solarbank).
+    #[serde(default)]
+    speicher_laden_kwh: Option<f64>,
+    /// Akku -> Haus.
+    #[serde(default)]
+    speicher_entladen_kwh: Option<f64>,
+}
+
+/// Streaming-NDJSON-Protokoll: jede Zeile auf stdout ist ein typed Event.
+/// `kind`-Discriminator entscheidet wie Rust die Zeile verarbeitet.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum SidecarLine {
+    /// Anlagen-ID — kommt einmal vom Sidecar nach dem Login.
+    Site { site_id: String },
+    /// Ein Tages-Datensatz — Rust batched und committed.
+    Row(SidecarRow),
+    /// Tag uebersprungen (kein Insert) — z.B. erzeugung=0 oder Zukunft.
+    Skip {
+        #[allow(dead_code)]
+        date: String,
+        #[allow(dead_code)]
+        reason: String,
+    },
+    /// Letzte Zeile mit gesammelten Warnungen.
+    Summary {
+        #[serde(default)]
+        warnings: Vec<String>,
+    },
+}
+
+#[derive(Deserialize)]
+struct SidecarError {
+    error: String,
+}
+
+/// Wieviele Rows in eine Transaktion. Bei Crash mid-stream sind die
+/// vorherigen Batches sicher in der DB.
+const COMMIT_BATCH_SIZE: usize = 30;
+
+/// UPSERT eines Batches. Plausi-Checks pro Row, akkumuliert Stats.
+fn commit_batch(
+    state: &State<DbState>,
+    batch: &mut Vec<SidecarRow>,
+    imported: &mut i64,
+    skipped: &mut i64,
+    errors: &mut Vec<String>,
+) -> Result<(), String> {
+    if batch.is_empty() {
+        return Ok(());
+    }
+    let mut db = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = db.transaction().map_err(|e| e.to_string())?;
+    for row in batch.iter() {
+        if row.erzeugung_kwh <= 0.0 {
+            *skipped += 1;
+            errors.push(format!(
+                "{}: erzeugung=0 — Schreib-Schutz aktiv, Tag uebersprungen.",
+                row.date
+            ));
+            continue;
+        }
+        if row.einspeisung_kwh > row.erzeugung_kwh + 0.5 {
+            *skipped += 1;
+            errors.push(format!(
+                "{}: Einspeisung ({:.2}) > Erzeugung ({:.2}) — uebersprungen.",
+                row.date, row.einspeisung_kwh, row.erzeugung_kwh
+            ));
+            continue;
+        }
+        let res = tx.execute(
+            "INSERT INTO daily_production
+                (date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh,
+                 speicher_laden_kwh, speicher_entladen_kwh, notiz)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL)
+             ON CONFLICT(date) DO UPDATE SET
+                erzeugung_kwh = excluded.erzeugung_kwh,
+                eigenverbrauch_kwh = excluded.eigenverbrauch_kwh,
+                einspeisung_kwh = excluded.einspeisung_kwh,
+                netzbezug_kwh = excluded.netzbezug_kwh,
+                -- Speicher-Felder nur ueberschreiben wenn der Sidecar
+                -- konkret Werte liefert (NULL=keine Aenderung, sonst write).
+                speicher_laden_kwh = COALESCE(excluded.speicher_laden_kwh, speicher_laden_kwh),
+                speicher_entladen_kwh = COALESCE(excluded.speicher_entladen_kwh, speicher_entladen_kwh)",
+            params![
+                row.date,
+                row.erzeugung_kwh,
+                row.eigenverbrauch_kwh,
+                row.einspeisung_kwh,
+                row.netzbezug_kwh,
+                row.speicher_laden_kwh,
+                row.speicher_entladen_kwh,
+            ],
+        );
+        match res {
+            Ok(_) => *imported += 1,
+            Err(e) => {
+                *skipped += 1;
+                errors.push(format!("{}: {}", row.date, e));
+            }
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    batch.clear();
+    Ok(())
+}
+
+/// Beschreibt einen Vendor-Sidecar fuer den `resolve_sidecar`-Lookup.
+/// Pro Vendor existiert ein eigenes Sidecar (Bin + venv) im Projekt.
+struct SidecarSpec {
+    /// Binary-Name ohne Suffix — wird sowohl als Plain-Name als auch mit
+    /// `-<triple>(.exe)` neben der Executable gesucht.
+    bin: &'static str,
+    /// Ordnername unter dem Repo-Root — enthaelt main.py + optional .venv.
+    repo_dir: &'static str,
+}
+
+fn spec_for(vendor: &str) -> Result<SidecarSpec, String> {
+    match vendor {
+        "anker" => Ok(SidecarSpec {
+            bin: "anker-solix",
+            repo_dir: "vendor-import-anker",
+        }),
+        "solaredge" => Ok(SidecarSpec {
+            bin: "solaredge",
+            repo_dir: "vendor-import-solaredge",
+        }),
+        "none" | "" => Err(
+            "Kein Hersteller-API ausgewaehlt. Waehle Anker oder SolarEdge \
+             unter Einstellungen → Hersteller-API."
+                .into(),
+        ),
+        other => Err(format!("Unbekannter Vendor: '{other}'")),
+    }
+}
+
+/// Resolves a vendor sidecar command. Tries (in order):
+/// 1. `<exe_dir>/<bin>(.exe)` — production bundle (plain).
+/// 2. `<exe_dir>/<bin>-<triple>(.exe)` — Tauri sidecar naming convention.
+/// 3. `python3 <cwd>/<repo_dir>/main.py` — dev fallback. Bevorzugt
+///    venv-Python falls vorhanden (Anker braucht Deps, SolarEdge nicht).
+fn resolve_sidecar(spec: &SidecarSpec) -> Result<std::process::Command, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe_dir = exe
+        .parent()
+        .ok_or_else(|| "current_exe hat kein Parent-Verzeichnis".to_string())?;
+    let ext = if cfg!(windows) { ".exe" } else { "" };
+
+    // Variante 1: nackter Name neben der Executable.
+    let plain = exe_dir.join(format!("{}{ext}", spec.bin));
+    if plain.is_file() {
+        return Ok(std::process::Command::new(plain));
+    }
+
+    // Variante 2: Tauri-Sidecar-Naming mit Target-Triple-Suffix.
+    let prefix = format!("{}-", spec.bin);
+    if let Ok(entries) = std::fs::read_dir(exe_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with(&prefix) && name_str.ends_with(ext) {
+                return Ok(std::process::Command::new(entry.path()));
+            }
+        }
+    }
+
+    // Variante 3: Dev-Fallback — Python-Script direkt im Repo aufrufen.
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let venv_python_rel: [&str; 3] = if cfg!(windows) {
+        [".venv", "Scripts", "python.exe"]
+    } else {
+        [".venv", "bin", "python"]
+    };
+    for base in [cwd.clone(), cwd.join("..")] {
+        let script = base.join(spec.repo_dir).join("main.py");
+        if !script.is_file() {
+            continue;
+        }
+        let mut venv_python = base.join(spec.repo_dir);
+        for part in venv_python_rel {
+            venv_python.push(part);
+        }
+        let interpreter = if venv_python.is_file() {
+            venv_python.into_os_string()
+        } else {
+            std::ffi::OsString::from("python3")
+        };
+        let mut cmd = std::process::Command::new(interpreter);
+        cmd.arg(script);
+        return Ok(cmd);
+    }
+
+    Err(format!(
+        "{} Sidecar nicht gefunden. Im Dev-Modus `python3 {}/main.py` testen, \
+         fuer Release `./{}/build-sidecar.sh` ausfuehren.",
+        spec.bin, spec.repo_dir, spec.repo_dir
+    ))
 }
 
 #[command]
 pub fn import_from_vendor(
+    app: AppHandle,
     state: State<DbState>,
-    _von: String,
-    _bis: String,
+    von: String,
+    bis: String,
 ) -> Result<ImportResult, String> {
-    let db = state.0.lock().map_err(|e| e.to_string())?;
-    let url = get_setting(&db, "anker_api_url")
-        .map_err(|e| e.to_string())?
-        .filter(|s| !s.is_empty());
-    if url.is_none() {
-        return Err(
-            "Keine Hersteller-API konfiguriert. \
-             Hinterlege URL und Token unter Einstellungen → Anker / Vendor-API."
-                .into(),
-        );
+    // Settings (Vendor-Wahl + Credentials) vor dem Sidecar-Aufruf lesen,
+    // Lock dann freigeben (Sidecar laeuft 1-300s, blockiert sonst die DB).
+    let (vendor, anker_email, anker_password, anker_country, se_api_key, se_site_id) = {
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        let vendor = get_setting(&db, "vendor")
+            .map_err(|e| e.to_string())?
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "none".to_string());
+        let anker_email = get_setting(&db, "anker_email")
+            .map_err(|e| e.to_string())?
+            .filter(|s| !s.is_empty());
+        let anker_password = get_setting(&db, "anker_password")
+            .map_err(|e| e.to_string())?
+            .filter(|s| !s.is_empty());
+        let anker_country = get_setting(&db, "anker_country")
+            .map_err(|e| e.to_string())?
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "DE".to_string());
+        let se_api_key = get_setting(&db, "solaredge_api_key")
+            .map_err(|e| e.to_string())?
+            .filter(|s| !s.is_empty());
+        let se_site_id = get_setting(&db, "solaredge_site_id")
+            .map_err(|e| e.to_string())?
+            .filter(|s| !s.is_empty());
+        (vendor, anker_email, anker_password, anker_country, se_api_key, se_site_id)
+    };
+
+    let spec = spec_for(&vendor)?;
+    let mut cmd = resolve_sidecar(&spec)?;
+    cmd.args(["--von", &von, "--bis", &bis])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    // Vendor-spezifische ENV — fehlende Credentials abfangen bevor Sidecar
+    // startet, damit der User eine klare Meldung statt Stack-Trace bekommt.
+    match vendor.as_str() {
+        "anker" => {
+            let (email, password) = match (anker_email, anker_password) {
+                (Some(e), Some(p)) => (e, p),
+                _ => {
+                    return Err(
+                        "Anker-Login fehlt. Hinterlege Email + Passwort unter \
+                         Einstellungen → Hersteller-API."
+                            .into(),
+                    );
+                }
+            };
+            cmd.env("ANKER_EMAIL", email)
+                .env("ANKER_PASSWORD", password)
+                .env("ANKER_COUNTRY", anker_country);
+        }
+        "solaredge" => {
+            let (api_key, site_id) = match (se_api_key, se_site_id) {
+                (Some(k), Some(s)) => (k, s),
+                _ => {
+                    return Err(
+                        "SolarEdge-Zugang fehlt. Hinterlege API-Key + Site-ID \
+                         unter Einstellungen → Hersteller-API."
+                            .into(),
+                    );
+                }
+            };
+            cmd.env("SOLAREDGE_API_KEY", api_key)
+                .env("SOLAREDGE_SITE_ID", site_id);
+        }
+        _ => unreachable!("spec_for hat bereits validiert"),
+    };
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Sidecar-Start fehlgeschlagen: {e}"))?;
+
+    // Stderr im Hintergrund-Thread lesen: NDJSON-Zeilen mit "progress"-Key
+    // werden als Tauri-Event `anker-import-progress` an die UI gepusht;
+    // alle anderen Zeilen (insb. das finale `{"error": "..."}`) sammeln wir
+    // fuer das Error-Reporting nach dem Prozess-Exit.
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "Sidecar hat keinen stderr-Pipe".to_string())?;
+    let stderr_buf: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    let stderr_buf_thread = stderr_buf.clone();
+    let app_thread = app.clone();
+    let stderr_handle = std::thread::spawn(move || {
+        let reader = BufReader::new(stderr);
+        for line in reader.lines().map_while(Result::ok) {
+            // Try-parse als JSON; "progress" -> Event, sonst aufsammeln.
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+                if v.get("progress").is_some() {
+                    let _ = app_thread.emit("anker-import-progress", &v);
+                    continue;
+                }
+            }
+            if let Ok(mut buf) = stderr_buf_thread.lock() {
+                buf.push_str(&line);
+                buf.push('\n');
+            }
+        }
+    });
+
+    // Stdout streamend lesen: NDJSON Zeile fuer Zeile. Rows in Batches von
+    // COMMIT_BATCH_SIZE committen, damit ein Crash mid-stream die bisherigen
+    // Batches NICHT verliert (kann bei laufendem Anker-Import 5+ Min
+    // wertvolle Daten retten).
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Sidecar hat keinen stdout-Pipe".to_string())?;
+    let stdout_reader = BufReader::new(stdout);
+
+    let mut site_id: Option<String> = None;
+    let mut warnings: Vec<String> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+    let mut imported: i64 = 0;
+    let mut skipped: i64 = 0;
+    let mut batch: Vec<SidecarRow> = Vec::with_capacity(COMMIT_BATCH_SIZE);
+
+    for line in stdout_reader.lines().map_while(Result::ok) {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<SidecarLine>(line) {
+            Ok(SidecarLine::Site { site_id: id }) => {
+                site_id = Some(id);
+            }
+            Ok(SidecarLine::Row(row)) => {
+                batch.push(row);
+                if batch.len() >= COMMIT_BATCH_SIZE {
+                    commit_batch(&state, &mut batch, &mut imported, &mut skipped, &mut errors)?;
+                }
+            }
+            Ok(SidecarLine::Skip { date, reason }) => {
+                skipped += 1;
+                warnings.push(format!("{date}: {reason}"));
+            }
+            Ok(SidecarLine::Summary { warnings: w }) => {
+                warnings.extend(w);
+            }
+            Err(e) => {
+                errors.push(format!("Sidecar-Zeile nicht parsbar: {e}. Inhalt: {line}"));
+            }
+        }
     }
-    // TODO: HTTP-Aufruf gegen URL + Token, parse JSON, INSERT/UPDATE daily_production.
-    // Implementierung folgt sobald die konkrete API (Anker SOLIX / Fronius / SMA …)
-    // feststeht.
-    Err("Hersteller-API-Import ist noch nicht implementiert. \
-         Bitte Tageswerte vorerst manuell erfassen."
-        .into())
+
+    // Finalen Batch committen, dann auf Sidecar-Exit warten.
+    commit_batch(&state, &mut batch, &mut imported, &mut skipped, &mut errors)?;
+
+    let status = child
+        .wait()
+        .map_err(|e| format!("Sidecar-Wait: {e}"))?;
+    let _ = stderr_handle.join();
+    let stderr_content = stderr_buf.lock().map(|s| s.clone()).unwrap_or_default();
+
+    if !status.success() {
+        // Sidecar serialisiert Fehler als JSON {"error": "..."} auf stderr.
+        // Wenn wir aber schon Batches committed haben, bringen wir den
+        // ImportResult mit der teilweisen Bilanz zurueck — die DB ist
+        // konsistent, der User soll wissen was rein kam, bevor das Sidecar
+        // umfiel.
+        let sidecar_err = serde_json::from_str::<SidecarError>(stderr_content.trim())
+            .map(|p| p.error)
+            .unwrap_or_else(|_| {
+                format!(
+                    "Sidecar Exit-Code {:?}: {}",
+                    status.code(),
+                    stderr_content.trim()
+                )
+            });
+        if imported == 0 {
+            return Err(sidecar_err);
+        }
+        warnings.push(format!("Sidecar abgebrochen: {sidecar_err}"));
+    }
+
+    Ok(ImportResult {
+        imported,
+        skipped,
+        errors,
+        warnings,
+        site_id,
+    })
 }

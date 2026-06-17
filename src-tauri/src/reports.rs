@@ -109,7 +109,8 @@ pub(crate) fn dashboard_for(
 
     let heute = conn
         .query_row(
-            "SELECT date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh, notiz
+            "SELECT date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh,
+                    speicher_laden_kwh, speicher_entladen_kwh, notiz
              FROM daily_production WHERE date = ?1",
             params![today_iso],
             |r| {
@@ -119,7 +120,9 @@ pub(crate) fn dashboard_for(
                     eigenverbrauch_kwh: r.get(2)?,
                     einspeisung_kwh: r.get(3)?,
                     netzbezug_kwh: r.get(4)?,
-                    notiz: r.get(5)?,
+                    speicher_laden_kwh: r.get(5)?,
+                    speicher_entladen_kwh: r.get(6)?,
+                    notiz: r.get(7)?,
                 })
             },
         )
@@ -141,7 +144,8 @@ pub(crate) fn dashboard_for(
 
     let max_tag = conn
         .query_row(
-            "SELECT date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh, notiz
+            "SELECT date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh,
+                    speicher_laden_kwh, speicher_entladen_kwh, notiz
              FROM daily_production
              ORDER BY erzeugung_kwh DESC LIMIT 1",
             [],
@@ -152,7 +156,9 @@ pub(crate) fn dashboard_for(
                     eigenverbrauch_kwh: r.get(2)?,
                     einspeisung_kwh: r.get(3)?,
                     netzbezug_kwh: r.get(4)?,
-                    notiz: r.get(5)?,
+                    speicher_laden_kwh: r.get(5)?,
+                    speicher_entladen_kwh: r.get(6)?,
+                    notiz: r.get(7)?,
                 })
             },
         )

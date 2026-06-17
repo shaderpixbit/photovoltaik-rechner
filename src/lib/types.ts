@@ -12,6 +12,10 @@ export interface DailyProduction {
   einspeisung_kwh: number;
   /** Netzbezug (kWh aus dem Netz), optional — für Autarkiegrad / Privat-Ersparnis */
   netzbezug_kwh: number | null;
+  /** Solar → Akku (kWh, kumuliert pro Tag). NULL bei reinen PV-Anlagen ohne Speicher. */
+  speicher_laden_kwh: number | null;
+  /** Akku → Haus (kWh). Pendant zu speicher_laden_kwh. */
+  speicher_entladen_kwh: number | null;
   notiz: string | null;
 }
 
@@ -153,9 +157,25 @@ export interface Settings {
   eigenverbrauch_preis: number;
   /** Fallback-Arbeitspreis (€/kWh) — greift wenn kein Tarif-Eintrag existiert. */
   strom_bezugspreis: number;
-  anker_api_url: string | null;
-  anker_api_token: string | null;
+  /** Aktiver Hersteller-API-Adapter — steuert welches Sidecar der API-Import nutzt. */
+  vendor: VendorKind;
+  /** Anker-Cloud-Account fuer den Tagesdaten-Import. */
+  anker_email: string | null;
+  anker_password: string | null;
+  /** ISO-Country-Code (DE, AT, CH …) — bestimmt EU- vs. COM-Endpoint. */
+  anker_country: string;
+  /** SolarEdge monitoring API Key (aus dem Admin-Bereich des Monitoring-Portals). */
+  solaredge_api_key: string | null;
+  /** SolarEdge Site-ID (numerisch, aus dem Monitoring-Portal). */
+  solaredge_site_id: string | null;
 }
+
+/** Hersteller-API-Adapter:
+ * - `none`     — kein API-Import, nur manuelle Erfassung
+ * - `anker`    — Anker Solix Cloud (inoffiziell, via thomluther/anker-solix-api)
+ * - `solaredge` — SolarEdge monitoringapi.solaredge.com (offiziell, REST + API-Key)
+ */
+export type VendorKind = "none" | "anker" | "solaredge";
 
 /* ── Aggregations ─────────────────────────────────────────────────────────── */
 

@@ -116,6 +116,28 @@ export async function setSettings(settings: Settings): Promise<void> {
   await invoke("set_settings", { settings });
 }
 
+/* ── Gefahrenzone ──────────────────────────────────────────────────────── */
+
+export interface WipeSummary {
+  deleted_daily: number;
+  deleted_payouts: number;
+  deleted_expenses: number;
+  deleted_assets: number;
+  deleted_verlauf_eintraege: number;
+}
+
+/**
+ * Loescht ALLE Nutzdaten irreversibel. Schema bleibt erhalten, Defaults
+ * werden neu geseedet. `confirmationToken` muss exakt "WIPE" sein — sonst
+ * lehnt Rust ab. UI fragt diesen Token via Input-Feld beim Nutzer ab.
+ */
+export async function wipeDatabase(
+  confirmationToken: string,
+): Promise<WipeSummary> {
+  ensureTauri();
+  return await invoke("wipe_database", { confirmationToken });
+}
+
 /* ── Reports / Statistik ─────────────────────────────────────────────────── */
 
 export async function getDashboard(): Promise<DashboardSnapshot> {
@@ -184,17 +206,26 @@ export async function importBackup(path: string): Promise<BackupSummary> {
   return await invoke("import_backup", { path });
 }
 
-/* ── Anker / Vendor API (Stub) ───────────────────────────────────────────── */
+/* ── Anker Solix Cloud Import ────────────────────────────────────────────── */
+
+export interface ImportResult {
+  imported: number;
+  skipped: number;
+  errors: string[];
+  warnings: string[];
+  site_id: string | null;
+}
 
 /**
- * Importiert Tageswerte von einer externen API (z.B. Anker SOLIX, Solar.Web…).
- * Implementierung folgt sobald `anker_api_url` und Token konfiguriert sind.
- * Bis dahin: bewusster Fehler, damit die UI nichts Falsches verspricht.
+ * Importiert Tagesdaten aus der Anker-Solix-Cloud fuer den Zeitraum [von, bis].
+ * Spawnt das Python-Sidecar `anker-solix`, das per inoffizieller API die
+ * Tagesaggregate holt und als JSON liefert. Bestehende Tageseintraege werden
+ * idempotent ueberschrieben (Anker liefert Tagessummen).
  */
 export async function importFromVendor(
   von: string,
   bis: string,
-): Promise<{ imported: number }> {
+): Promise<ImportResult> {
   ensureTauri();
   return await invoke("import_from_vendor", { von, bis });
 }

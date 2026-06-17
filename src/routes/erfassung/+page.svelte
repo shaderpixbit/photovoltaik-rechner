@@ -1,13 +1,15 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import {
     deleteDaily,
     getDaily,
+    getSettings,
     importFromVendor,
     listDailyRange,
     upsertDaily,
   } from "$lib/api";
-  import type { DailyProduction } from "$lib/types";
+  import type { DailyProduction, VendorKind } from "$lib/types";
   import { formatDateDE, formatKWh, todayISO } from "$lib/utils";
   import Card from "$lib/components/ui/Card.svelte";
   import CardHeader from "$lib/components/ui/CardHeader.svelte";
@@ -31,6 +33,8 @@
   let erzeugung = $state<number | "">("");
   let einspeisung = $state<number | "">("");
   let netzbezug = $state<number | "">("");
+  let speicherLaden = $state<number | "">("");
+  let speicherEntladen = $state<number | "">("");
   let notiz = $state("");
 
   let eigenverbrauchComputed = $derived.by(() => {
@@ -46,6 +50,45 @@
   let existingInPeriod = $state(0);
   let busy = $state(false);
   let toast = $state<{ kind: "ok" | "err"; text: string } | null>(null);
+  let vendor = $state<VendorKind>("none");
+
+  const VENDOR_LABELS: Record<VendorKind, string> = {
+    none: "kein API",
+    anker: "Anker",
+    solaredge: "SolarEdge",
+  };
+
+  // Sidecar-Import-Status: Startzeit (epoch ms) wenn ein Import laeuft, sonst
+  // null. `importElapsed` wird per Effect alle 500ms aktualisiert, damit der
+  // Timer in der UI zaehlt — ohne dass wir auf jeden Tick Re-Renders der
+  // Eingabe-Felder ausloesen.
+  let importStartedAt = $state<number | null>(null);
+  let importElapsedSec = $state(0);
+  let importEstSec = $state(0);
+
+  // Live-Progress aus dem Python-Sidecar (via stderr -> Rust -> Tauri-Event).
+  let importProgressMsg = $state("");
+  let importProgressDone = $state(0);
+  let importProgressTotal = $state(0);
+  let unlistenProgress: UnlistenFn | null = null;
+
+  $effect(() => {
+    if (importStartedAt === null) {
+      importElapsedSec = 0;
+      return;
+    }
+    const started = importStartedAt;
+    const handle = setInterval(() => {
+      importElapsedSec = Math.floor((Date.now() - started) / 1000);
+    }, 500);
+    return () => clearInterval(handle);
+  });
+
+  function formatDuration(sec: number): string {
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return `${m}:${String(s).padStart(2, "0")}`;
+  }
 
   function showToast(kind: "ok" | "err", text: string) {
     toast = { kind, text };
@@ -144,12 +187,16 @@
           erzeugung = existing.erzeugung_kwh;
           einspeisung = existing.einspeisung_kwh;
           netzbezug = existing.netzbezug_kwh ?? "";
+          speicherLaden = existing.speicher_laden_kwh ?? "";
+          speicherEntladen = existing.speicher_entladen_kwh ?? "";
           notiz = existing.notiz ?? "";
           existingInPeriod = 1;
         } else {
           erzeugung = "";
           einspeisung = "";
           netzbezug = "";
+          speicherLaden = "";
+          speicherEntladen = "";
           notiz = "";
           existingInPeriod = 0;
         }
@@ -160,6 +207,8 @@
           erzeugung = "";
           einspeisung = "";
           netzbezug = "";
+          speicherLaden = "";
+          speicherEntladen = "";
           notiz = "";
         } else {
           erzeugung = round1(rows.reduce((s, x) => s + x.erzeugung_kwh, 0));
@@ -168,6 +217,10 @@
           );
           const netzSum = rows.reduce((s, x) => s + (x.netzbezug_kwh ?? 0), 0);
           netzbezug = netzSum > 0 ? round1(netzSum) : "";
+          const spLadSum = rows.reduce((s, x) => s + (x.speicher_laden_kwh ?? 0), 0);
+          speicherLaden = spLadSum > 0 ? round1(spLadSum) : "";
+          const spEntSum = rows.reduce((s, x) => s + (x.speicher_entladen_kwh ?? 0), 0);
+          speicherEntladen = spEntSum > 0 ? round1(spEntSum) : "";
           notiz = "";
         }
       }
@@ -180,7 +233,15 @@
     return Math.round(v * 10) / 10;
   }
 
-  onMount(loadRecent);
+  onMount(async () => {
+    await loadRecent();
+    try {
+      const s = await getSettings();
+      vendor = (s.vendor as VendorKind) ?? "none";
+    } catch {
+      vendor = "none";
+    }
+  });
 
   $effect(() => {
     // Re-load when the chosen period changes. Read all relevant state up-front
@@ -218,11 +279,17 @@
     const totalEi = Number(einspeisung) || 0;
     const hasNetz = netzbezug !== "" && Number.isFinite(Number(netzbezug));
     const totalNetz = hasNetz ? Number(netzbezug) : 0;
+    const hasSpLad = speicherLaden !== "" && Number.isFinite(Number(speicherLaden));
+    const totalSpLad = hasSpLad ? Number(speicherLaden) : 0;
+    const hasSpEnt = speicherEntladen !== "" && Number.isFinite(Number(speicherEntladen));
+    const totalSpEnt = hasSpEnt ? Number(speicherEntladen) : 0;
     const n = days.length;
     const perErz = totalErz / n;
     const perEv = totalEv / n;
     const perEi = totalEi / n;
     const perNetz = totalNetz / n;
+    const perSpLad = totalSpLad / n;
+    const perSpEnt = totalSpEnt / n;
     const note = notiz.trim() || null;
 
     busy = true;
@@ -234,6 +301,8 @@
           eigenverbrauch_kwh: mode === "tag" ? totalEv : perEv,
           einspeisung_kwh: mode === "tag" ? totalEi : perEi,
           netzbezug_kwh: hasNetz ? (mode === "tag" ? totalNetz : perNetz) : null,
+          speicher_laden_kwh: hasSpLad ? (mode === "tag" ? totalSpLad : perSpLad) : null,
+          speicher_entladen_kwh: hasSpEnt ? (mode === "tag" ? totalSpEnt : perSpEnt) : null,
           notiz: note,
         };
         await upsertDaily(entry);
@@ -265,18 +334,72 @@
   }
 
   async function tryImport() {
+    const r = periodRange();
+    if (!r) {
+      showToast("err", "Ungueltiger Zeitraum.");
+      return;
+    }
+    // Per-Tag-Strategie: 2 API-Calls + 0.4s sleep pro Tag + ~0.2s HTTP
+    // = ca. 1s/Tag. Plus ~3s Login-Overhead.
+    const days = periodDays().length;
+    const estSec = days + 3;
+    if (
+      days > 31 &&
+      !confirm(
+        `Import von ${days} Tagen (${r.from} bis ${r.to}) — ca. ` +
+          `${formatDuration(estSec)} min Laufzeit (2 Calls/Tag wegen ` +
+          `Anker-Rate-Limit). Fortfahren?`,
+      )
+    ) {
+      return;
+    }
     busy = true;
+    importStartedAt = Date.now();
+    importEstSec = estSec;
+    importProgressMsg = "Starte Sidecar…";
+    importProgressDone = 0;
+    importProgressTotal = 0;
+    // Garantieren dass der Banner gerendert ist bevor wir blockierende
+    // Awaits machen — Svelte 5 batched State-Mutations, await listen()
+    // koennte sonst die DOM-Aktualisierung verzoegern.
+    await tick();
+    // Live-Updates vom Sidecar abonnieren BEVOR die invoke laeuft — sonst
+    // koennten frueh emittierte Events verloren gehen.
+    unlistenProgress = await listen<{
+      progress: string;
+      done: number;
+      total: number;
+    }>("anker-import-progress", (e) => {
+      // console.log laesst sich in DevTools (F12 in dev) live mitlesen —
+      // wenn hier nichts erscheint, kommt das Event nicht vom Rust an.
+      console.debug("[anker-import-progress]", e.payload);
+      importProgressMsg = e.payload.progress;
+      importProgressDone = e.payload.done;
+      importProgressTotal = e.payload.total;
+    });
     try {
-      const today = todayISO();
-      const lastImport = recent.length > 0 ? recent[0].date : todayISO();
-      const res = await importFromVendor(lastImport, today);
-      showToast("ok", `${res.imported} Tage importiert.`);
+      const res = await importFromVendor(r.from, r.to);
+      let msg = `${res.imported} Tage importiert in ${formatDuration(importElapsedSec)}`;
+      if (res.skipped > 0) msg += `, ${res.skipped} uebersprungen`;
+      if (res.warnings.length > 0) msg += ` (${res.warnings.length} Hinweise)`;
+      showToast(res.errors.length > 0 ? "err" : "ok", msg);
       await loadRecent();
       await loadForPeriod();
     } catch (e) {
       showToast("err", e instanceof Error ? e.message : String(e));
+      importProgressMsg = "Abgebrochen: " + (e instanceof Error ? e.message : String(e));
     } finally {
       busy = false;
+      if (unlistenProgress) {
+        unlistenProgress();
+        unlistenProgress = null;
+      }
+      // Card noch 2s sichtbar lassen, damit der User auch bei schnellem /
+      // fehlgeschlagenem Import den Endzustand wahrnimmt — sonst flasht der
+      // Banner zu kurz auf.
+      setTimeout(() => {
+        importStartedAt = null;
+      }, 2000);
     }
   }
 
@@ -294,11 +417,65 @@
         Manuelle Eingabe als Tag, Monat oder Jahr — oder Import aus Hersteller-API.
       </p>
     </div>
-    <Button variant="ghost" onclick={tryImport} disabled={busy}>
+    <Button variant="ghost" onclick={tryImport}
+      disabled={busy || vendor === "none"}
+      title={vendor === "none"
+        ? "Kein Hersteller-API ausgewaehlt. Aktiviere Anker oder SolarEdge unter Einstellungen → Hersteller-API."
+        : "Importiert Tageswerte fuer den unten gewaehlten Zeitraum. Heute/gestern liefert die API oft noch keine finale Tagessumme — diese Tage ggf. spaeter nachholen."}>
       <CloudDownloadIcon class="size-4" />
-      API-Import
+      API-Import ({VENDOR_LABELS[vendor]} · {periodLabel})
     </Button>
   </div>
+
+  {#if importStartedAt !== null}
+    {@const realPct = importProgressTotal > 0
+      ? Math.round((importProgressDone / importProgressTotal) * 100)
+      : 0}
+    {@const estPct = importEstSec > 0
+      ? Math.min(99, Math.round((importElapsedSec / importEstSec) * 100))
+      : 0}
+    {@const pct = importProgressTotal > 0 ? realPct : estPct}
+    <!-- Sticky an die Top-Zone, damit der Banner auch bei langer Seite
+         immer sichtbar bleibt waehrend der Sidecar laeuft. -->
+    <div class="sticky top-2 z-30">
+      <div
+        class="rounded-lg border-2 shadow-lg"
+        style="background: var(--tr-surface); border-color: var(--tr-sun);"
+      >
+        <div class="px-5 py-4">
+          <div class="flex items-center justify-between text-sm">
+            <span class="inline-flex items-center gap-2 font-medium">
+              <span class="inline-block size-2.5 animate-pulse rounded-full"
+                style="background: var(--tr-sun);"></span>
+              {importProgressMsg || "Anker-Cloud-Import laeuft…"}
+            </span>
+            <span class="font-mono text-xs text-[var(--tr-text-dim)]">
+              {#if importProgressTotal > 0}
+                {importProgressDone}/{importProgressTotal} Calls ·
+              {/if}
+              {formatDuration(importElapsedSec)} / ~{formatDuration(importEstSec)}
+            </span>
+          </div>
+          <div class="mt-2 h-2 w-full overflow-hidden rounded-full"
+            style="background: var(--tr-surface2);">
+            <div
+              class="h-full transition-all duration-300"
+              style="width: {pct}%; background: var(--tr-sun);"
+            ></div>
+          </div>
+          <p class="mt-2 text-xs text-[var(--tr-text-faint)]">
+            Sidecar holt Tageswerte tagweise (2 Calls/Tag, 0.4s Pause wegen
+            Rate-Limit). Tage ohne Solar-Daten werden uebersprungen.
+            {#if importProgressTotal === 0 && importElapsedSec > 5}
+              <br /><strong>Hinweis:</strong> nach 5s noch keine Live-Events vom
+              Sidecar — eventuell altes Rust-Binary. <code>bun run tauri dev</code>
+              neu starten falls Probleme.
+            {/if}
+          </p>
+        </div>
+      </div>
+    </div>
+  {/if}
 
   <Card>
     <CardHeader
@@ -407,6 +584,34 @@
           placeholder="—"
         />
       </div>
+      <div class="space-y-1.5">
+        <Label for="spl">
+          Speicher Laden (kWh)
+          <span class="text-[var(--tr-text-faint)]">Solar → Akku</span>
+        </Label>
+        <Input
+          id="spl"
+          type="number"
+          step="0.1"
+          min="0"
+          bind:value={speicherLaden}
+          placeholder="—"
+        />
+      </div>
+      <div class="space-y-1.5">
+        <Label for="spe">
+          Speicher Entladen (kWh)
+          <span class="text-[var(--tr-text-faint)]">Akku → Haus</span>
+        </Label>
+        <Input
+          id="spe"
+          type="number"
+          step="0.1"
+          min="0"
+          bind:value={speicherEntladen}
+          placeholder="—"
+        />
+      </div>
       <div class="space-y-1.5 md:col-span-4">
         <Label for="notiz">Notiz (optional)</Label>
         <Input
@@ -483,6 +688,8 @@
             <th class="px-5 py-2 text-right">Erzeugung</th>
             <th class="px-5 py-2 text-right">Eigenverbr.</th>
             <th class="px-5 py-2 text-right">Einspeisung</th>
+            <th class="px-5 py-2 text-right" title="Solar → Akku">Sp ↓</th>
+            <th class="px-5 py-2 text-right" title="Akku → Haus">Sp ↑</th>
             <th class="px-5 py-2 text-left">Notiz</th>
             <th class="px-5 py-2"></th>
           </tr>
@@ -502,6 +709,12 @@
               </td>
               <td class="px-5 py-2 text-right font-mono">
                 {formatKWh(r.einspeisung_kwh)}
+              </td>
+              <td class="px-5 py-2 text-right font-mono text-[var(--tr-text-dim)]">
+                {r.speicher_laden_kwh != null ? formatKWh(r.speicher_laden_kwh) : "—"}
+              </td>
+              <td class="px-5 py-2 text-right font-mono text-[var(--tr-text-dim)]">
+                {r.speicher_entladen_kwh != null ? formatKWh(r.speicher_entladen_kwh) : "—"}
               </td>
               <td class="px-5 py-2 text-[var(--tr-text-dim)]">{r.notiz ?? ""}</td>
               <td class="px-5 py-2 text-right">

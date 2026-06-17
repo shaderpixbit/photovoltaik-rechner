@@ -9,7 +9,9 @@
     getSettings,
     importBackup,
     setSettings,
+    wipeDatabase,
     type BackupSummary,
+    type WipeSummary,
   } from "$lib/api";
   import type {
     BetreiberModus,
@@ -19,6 +21,7 @@
     StromtarifPeriode,
     UstModus,
     UstPeriode,
+    VendorKind,
     VerguetungPeriode,
   } from "$lib/types";
   import { centsToEuro, euroToCents, todayISO, formatDateDE } from "$lib/utils";
@@ -33,6 +36,8 @@
     DatabaseIcon,
     DownloadIcon,
     SaveIcon,
+    TriangleAlertIcon,
+    Trash2Icon,
     UploadIcon,
   } from "@lucide/svelte";
 
@@ -44,8 +49,12 @@
   let satzProzent = $state(19);
   let evPreis = $state(0.2);
   let bezugPreis = $state(0.35);
-  let apiUrl = $state("");
-  let apiToken = $state("");
+  let vendor = $state<VendorKind>("none");
+  let ankerEmail = $state("");
+  let ankerPassword = $state("");
+  let ankerCountry = $state("DE");
+  let seApiKey = $state("");
+  let seSiteId = $state("");
 
   async function reload() {
     try {
@@ -60,8 +69,12 @@
       satzProzent = settings.ust_satz_regel * 100;
       evPreis = settings.eigenverbrauch_preis;
       bezugPreis = settings.strom_bezugspreis;
-      apiUrl = settings.anker_api_url ?? "";
-      apiToken = settings.anker_api_token ?? "";
+      vendor = settings.vendor || "none";
+      ankerEmail = settings.anker_email ?? "";
+      ankerPassword = settings.anker_password ?? "";
+      ankerCountry = settings.anker_country || "DE";
+      seApiKey = settings.solaredge_api_key ?? "";
+      seSiteId = settings.solaredge_site_id ?? "";
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     }
@@ -158,8 +171,12 @@
       settings.ust_satz_regel = satzProzent / 100;
       settings.eigenverbrauch_preis = evPreis;
       settings.strom_bezugspreis = bezugPreis;
-      settings.anker_api_url = apiUrl.trim() || null;
-      settings.anker_api_token = apiToken.trim() || null;
+      settings.vendor = vendor;
+      settings.anker_email = ankerEmail.trim() || null;
+      settings.anker_password = ankerPassword.trim() || null;
+      settings.anker_country = (ankerCountry.trim() || "DE").toUpperCase();
+      settings.solaredge_api_key = seApiKey.trim() || null;
+      settings.solaredge_site_id = seSiteId.trim() || null;
       settings.ust_perioden = [...settings.ust_perioden].sort(byDate);
       settings.betreiber_perioden = [...settings.betreiber_perioden].sort(byDate);
       settings.verguetung_perioden = [...settings.verguetung_perioden].sort(byDate);
@@ -247,6 +264,38 @@
       error = e instanceof Error ? e.message : String(e);
     } finally {
       backupBusy = false;
+    }
+  }
+
+  // ── Gefahrenzone: kompletter DB-Wipe ──────────────────────────────────
+  // Zwei-Stufen-Bestaetigung: Card aufklappen + WIPE eintippen + finaler Klick.
+  let wipeOpen = $state(false);
+  let wipeConfirmInput = $state("");
+  let wipeBusy = $state(false);
+  let wipeMsg = $state<string | null>(null);
+
+  function wipeSummary(s: WipeSummary): string {
+    return (
+      `Geloescht: ${s.deleted_daily} Tage, ${s.deleted_payouts} Auszahlungen, ` +
+      `${s.deleted_expenses} Ausgaben, ${s.deleted_assets} Anlagen, ` +
+      `${s.deleted_verlauf_eintraege} Verlaufs-Eintraege.`
+    );
+  }
+
+  async function doWipe() {
+    if (wipeConfirmInput.trim() !== "WIPE") return;
+    wipeBusy = true;
+    wipeMsg = null;
+    try {
+      const summary = await wipeDatabase("WIPE");
+      wipeMsg = wipeSummary(summary);
+      wipeConfirmInput = "";
+      wipeOpen = false;
+      await reload();
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      wipeBusy = false;
     }
   }
 </script>
@@ -386,26 +435,95 @@
 
     <Card>
       <CardHeader
-        title="Hersteller-API (Anker / Fronius / SMA …)"
-        description="Optional. Wenn gesetzt, kann die Tageserfassung Werte importieren."
+        title="Hersteller-API"
+        description="Quelle für den Tagesdaten-Import auf /erfassung. Nur die Felder des gewählten Adapters werden verwendet."
       />
-      <div class="grid grid-cols-1 gap-4 px-5 py-5 md:grid-cols-2">
-        <div class="space-y-1.5">
-          <Label>API-URL</Label>
-          <Input bind:value={apiUrl} placeholder="https://…/api/v1/production" />
-        </div>
-        <div class="space-y-1.5">
-          <Label>API-Token</Label>
-          <Input type="password" bind:value={apiToken} placeholder="••••••" />
-        </div>
+      <div class="px-5 pt-5">
+        <Label>API-Adapter</Label>
+        <Select
+          bind:value={vendor as unknown as string}
+          options={[
+            { value: "none", label: "Keiner (nur manuell)" },
+            { value: "anker", label: "Anker Solix Cloud (inoffiziell)" },
+            { value: "solaredge", label: "SolarEdge (mySolarEdge, offiziell)" },
+          ]}
+        />
       </div>
-      <div
-        class="border-t border-[var(--tr-line)] px-5 py-3 text-xs text-[var(--tr-text-dim)]"
-      >
-        Der konkrete Import-Adapter wird ergänzt, sobald die API-Spezifikation
-        feststeht. Bis dahin meldet der Import-Button einen klaren Fehler statt
-        stillschweigend nichts zu tun.
-      </div>
+
+      {#if vendor === "anker"}
+        <div class="grid grid-cols-1 gap-4 px-5 py-5 md:grid-cols-3">
+          <div class="space-y-1.5">
+            <Label>Anker-Account-Email</Label>
+            <Input
+              type="email"
+              bind:value={ankerEmail}
+              placeholder="pv-readonly@beispiel.de"
+              autocomplete="off"
+            />
+          </div>
+          <div class="space-y-1.5">
+            <Label>Anker-Passwort</Label>
+            <Input
+              type="password"
+              bind:value={ankerPassword}
+              placeholder="••••••"
+              autocomplete="new-password"
+            />
+          </div>
+          <div class="space-y-1.5">
+            <Label>Land (ISO-Code)</Label>
+            <Input
+              bind:value={ankerCountry}
+              placeholder="DE"
+              maxlength={2}
+            />
+            <p class="text-xs text-[var(--tr-text-dim)]">
+              DE/AT/CH → EU-Endpoint, US/etc. → Global-Endpoint.
+            </p>
+          </div>
+        </div>
+        <div
+          class="border-t border-[var(--tr-line)] px-5 py-3 text-xs text-[var(--tr-text-dim)]"
+        >
+          Achtung: Anker erlaubt nur eine aktive Session pro Account — die Haupt-
+          Handy-App fliegt sonst raus. Empfohlen: Zweit-Account anlegen und in
+          der Anker-App als „Mitglied" zur Anlage einladen.
+        </div>
+      {:else if vendor === "solaredge"}
+        <div class="grid grid-cols-1 gap-4 px-5 py-5 md:grid-cols-2">
+          <div class="space-y-1.5">
+            <Label>API-Key</Label>
+            <Input
+              type="password"
+              bind:value={seApiKey}
+              placeholder="••••••"
+              autocomplete="off"
+            />
+            <p class="text-xs text-[var(--tr-text-dim)]">
+              monitoring.solaredge.com → Admin → Site Access → API-Key.
+            </p>
+          </div>
+          <div class="space-y-1.5">
+            <Label>Site-ID</Label>
+            <Input bind:value={seSiteId} placeholder="z. B. 1234567" />
+            <p class="text-xs text-[var(--tr-text-dim)]">
+              Sichtbar in der URL des Monitoring-Portals nach /site/.
+            </p>
+          </div>
+        </div>
+        <div
+          class="border-t border-[var(--tr-line)] px-5 py-3 text-xs text-[var(--tr-text-dim)]"
+        >
+          Offizielle REST-API (max. 300 Requests / Tag). Eigenverbrauch /
+          Einspeisung / Netzbezug nur verfügbar wenn ein Smart Meter oder
+          Modbus-Energiezähler im SolarEdge-System gemeldet ist.
+        </div>
+      {:else}
+        <div class="px-5 py-5 text-sm text-[var(--tr-text-dim)]">
+          Kein Hersteller-API aktiv — der Import-Button auf /erfassung ist deaktiviert.
+          Tagesdaten manuell erfassen oder einen Adapter auswählen.
+        </div>
+      {/if}
     </Card>
 
     <div class="flex items-center gap-3">
@@ -442,6 +560,95 @@
           style="color: var(--tr-green-dim); background: var(--tr-green-bg);"
         >
           {backupMsg}
+        </div>
+      {/if}
+    </Card>
+
+    <!-- Gefahrenzone: irreversibler Komplett-Wipe. Bewusst rot eingefaerbt
+         und mit Pflicht-Eingabe "WIPE" gegen versehentliches Ausloesen. -->
+    <Card>
+      <div
+        class="flex items-center gap-2 border-b px-5 py-3"
+        style="border-color: var(--tr-red); background: var(--tr-red-bg);"
+      >
+        <TriangleAlertIcon class="size-5" style="color: var(--tr-red);" />
+        <div>
+          <h3 class="text-sm font-semibold" style="color: var(--tr-red);">
+            Gefahrenzone
+          </h3>
+          <p class="text-xs" style="color: var(--tr-red-dim, var(--tr-red));">
+            Alle Daten dieser App unwiderruflich löschen. Nutze vorher
+            „Backup exportieren".
+          </p>
+        </div>
+      </div>
+
+      {#if !wipeOpen}
+        <div class="px-5 py-5">
+          <button
+            type="button"
+            class="inline-flex h-9 items-center gap-2 rounded-md px-3 text-sm font-medium transition-colors hover:opacity-90"
+            style="background: var(--tr-red); color: white;"
+            onclick={() => {
+              wipeOpen = true;
+              wipeConfirmInput = "";
+              wipeMsg = null;
+            }}
+          >
+            <Trash2Icon class="size-4" />
+            Datenbank komplett löschen…
+          </button>
+        </div>
+      {:else}
+        <div class="space-y-3 px-5 py-5">
+          <p class="text-sm">
+            Du bist dabei <strong>ALLE</strong> Tageserfassungen, Auszahlungen,
+            Ausgaben, Anlagen, Verlaufstabellen und Einstellungen zu löschen.
+            <strong>Diese Aktion kann nicht rückgängig gemacht werden.</strong>
+          </p>
+          <p class="text-sm">
+            Tippe <code class="rounded px-1.5 py-0.5 font-mono text-xs"
+              style="background: var(--tr-red-bg); color: var(--tr-red);">WIPE</code>
+            ins Feld unten, um den Button freizuschalten:
+          </p>
+          <Input
+            bind:value={wipeConfirmInput}
+            placeholder="WIPE"
+            autocomplete="off"
+            spellcheck={false}
+            class="font-mono"
+          />
+          <div class="flex flex-wrap items-center gap-2 pt-1">
+            <button
+              type="button"
+              class="inline-flex h-9 items-center gap-2 rounded-md px-3 text-sm font-medium transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+              style="background: var(--tr-red); color: white;"
+              disabled={wipeBusy || wipeConfirmInput.trim() !== "WIPE"}
+              onclick={doWipe}
+            >
+              <Trash2Icon class="size-4" />
+              {wipeBusy ? "Lösche…" : "Jetzt alles löschen"}
+            </button>
+            <Button
+              variant="ghost"
+              onclick={() => {
+                wipeOpen = false;
+                wipeConfirmInput = "";
+              }}
+              disabled={wipeBusy}
+            >
+              Abbrechen
+            </Button>
+          </div>
+        </div>
+      {/if}
+
+      {#if wipeMsg}
+        <div
+          class="border-t px-5 py-2 text-sm"
+          style="color: var(--tr-red); background: var(--tr-red-bg); border-color: var(--tr-red);"
+        >
+          {wipeMsg}
         </div>
       {/if}
     </Card>

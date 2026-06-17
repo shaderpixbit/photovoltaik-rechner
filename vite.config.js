@@ -13,7 +13,17 @@ export default defineConfig(async () => ({
     host: host || false,
     hmr: host ? { protocol: "ws", host, port: 1421 } : undefined,
     watch: {
-      ignored: ["**/src-tauri/**"],
+      // Vite respektiert .gitignore nicht — schwere Verzeichnisse explizit
+      // ausschliessen, sonst sprengt der File-Watcher das System-inotify-Limit.
+      // .direnv/flake-inputs/ enthaelt eine komplette Kopie von nixpkgs.
+      ignored: [
+        "**/src-tauri/**",
+        "**/.direnv/**",
+        "**/.svelte-kit/**",
+        "**/build/**",
+        "**/vendor-import-anker/.venv/**",
+        "**/vendor-import-anker/.pyinstaller-build/**",
+      ],
     },
   },
 }));

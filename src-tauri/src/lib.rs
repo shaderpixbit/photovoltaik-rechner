@@ -46,6 +46,7 @@ pub fn run() {
             crud::delete_asset,
             crud::get_settings,
             crud::set_settings,
+            crud::wipe_database,
             reports::aggregate_production,
             reports::get_dashboard,
             reports::get_euer,

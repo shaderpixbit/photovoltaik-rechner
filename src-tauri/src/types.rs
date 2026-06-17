@@ -22,6 +22,13 @@ pub struct DailyProduction {
     pub einspeisung_kwh: f64,
     #[serde(default)]
     pub netzbezug_kwh: Option<f64>,
+    /// Solar -> Akku (kWh, kumuliert pro Tag). Nur fuer Anlagen mit Speicher
+    /// (Anker Solarbank, SolarEdge mit Battery). NULL bei reinen PV-Anlagen.
+    #[serde(default)]
+    pub speicher_laden_kwh: Option<f64>,
+    /// Akku -> Haus (kWh). Pendant zu speicher_laden_kwh.
+    #[serde(default)]
+    pub speicher_entladen_kwh: Option<f64>,
     #[serde(default)]
     pub notiz: Option<String>,
 }
@@ -136,10 +143,28 @@ pub struct Settings {
     pub eigenverbrauch_preis: f64,
     /// Fallback-Arbeitspreis (€/kWh) — wenn kein Tarif-Eintrag für ein Datum existiert.
     pub strom_bezugspreis: f64,
+    /// Aktiver Hersteller-API-Adapter: "none" | "anker" | "solaredge".
+    /// Steuert welches Sidecar `import_from_vendor` aufruft.
+    #[serde(default = "default_vendor")]
+    pub vendor: String,
     #[serde(default)]
-    pub anker_api_url: Option<String>,
+    pub anker_email: Option<String>,
     #[serde(default)]
-    pub anker_api_token: Option<String>,
+    pub anker_password: Option<String>,
+    #[serde(default = "default_country")]
+    pub anker_country: String,
+    #[serde(default)]
+    pub solaredge_api_key: Option<String>,
+    #[serde(default)]
+    pub solaredge_site_id: Option<String>,
+}
+
+fn default_country() -> String {
+    "DE".to_string()
+}
+
+fn default_vendor() -> String {
+    "none".to_string()
 }
 
 #[derive(Serialize, Clone, Debug)]
