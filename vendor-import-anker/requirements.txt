@@ -1,4 +1,12 @@
 # anker-solix-api ist nicht auf PyPI — direkt aus dem GitHub-Tag installieren.
 # Pin auf einen konkreten Tag, damit API-Brueche kontrolliert reinkommen.
 anker-solix-api @ git+https://github.com/thomluther/anker-solix-api.git@v3.6.3
-aiohttp>=3.10
+
+# Die Lib deklariert ihre Runtime-Deps nur in [tool.poetry.dependencies] und
+# setzt `package-mode = false` — pip pullt sie deshalb nicht transitiv mit.
+# Wir listen sie hier explizit (Versionen aus dem v3.6.3-pyproject):
+aiohttp>=3.10.11
+aiofiles>=25.1.0
+cryptography>=3.4.8
+paho-mqtt>=2.1.0
+python-dotenv>=1.2.1

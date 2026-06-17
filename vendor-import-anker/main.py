@@ -37,7 +37,9 @@ from typing import Any
 
 try:
     from aiohttp import ClientSession
-    from anker_solix_api.api import AnkerSolixApi
+    # v3.6.3 hat noch die flache Modul-Struktur unter `api/`; die `main`-Branch
+    # ist auf `anker_solix_api/` umgezogen, ist aber nicht released.
+    from api.api import AnkerSolixApi
 except ImportError as exc:
     print(
         json.dumps(
