@@ -262,7 +262,6 @@ async def _collect(
             net = _first_charge_trend_value(grid) or _kwh(
                 grid.get("grid_to_home_total"), grid_t_unit
             )
-            ev_from_api = _kwh(sol.get("solar_to_home_total"), sol_t_unit)
 
             # erzeugung = 0 heisst: Anker hat keinen Solar-Datensatz fuer
             # diesen Tag geliefert. Skip-Zeile emittieren — Rust schreibt
@@ -280,7 +279,13 @@ async def _collect(
                 )
                 continue
 
-            ev = ev_from_api if ev_from_api > 0 else max(0.0, erz - ein)
+            # Eigenverbrauch IMMER als erz - ein rechnen. Anker liefert
+            # zwar ein `solar_to_home_total` — das ist aber nur der direkte
+            # Solar->Haus-Anteil OHNE Akku-Umweg. Bei Solarbank-Systemen
+            # unterschaetzt das den Gesamt-Eigenverbrauch (Solar->Akku->Haus
+            # wuerde fehlen). erz - ein zaehlt alles korrekt mit, was nicht
+            # ins Netz ging — egal ob direkt oder zwischengespeichert.
+            ev = max(0.0, erz - ein)
 
             # Speicher-Flow (speicher_laden_kwh / speicher_entladen_kwh) wird
             # bewusst NICHT automatisch emittiert. Erste Implementierung las
