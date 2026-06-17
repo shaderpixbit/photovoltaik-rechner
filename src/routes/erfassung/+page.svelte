@@ -268,9 +268,13 @@
     busy = true;
     try {
       const today = todayISO();
+      // Ab dem juengsten vorhandenen Tag bis heute — taegliche Aggregate, idempotent.
       const lastImport = recent.length > 0 ? recent[0].date : todayISO();
       const res = await importFromVendor(lastImport, today);
-      showToast("ok", `${res.imported} Tage importiert.`);
+      let msg = `${res.imported} Tage importiert`;
+      if (res.skipped > 0) msg += `, ${res.skipped} uebersprungen`;
+      if (res.warnings.length > 0) msg += ` (${res.warnings.length} Hinweise)`;
+      showToast(res.errors.length > 0 ? "err" : "ok", msg);
       await loadRecent();
       await loadForPeriod();
     } catch (e) {

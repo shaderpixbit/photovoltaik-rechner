@@ -199,11 +199,20 @@ pub(crate) fn seed_defaults(conn: &Connection) -> Result<(), rusqlite::Error> {
         [],
     )?;
     conn.execute(
-        "INSERT OR IGNORE INTO settings (key, value) VALUES ('anker_api_url', '')",
+        "INSERT OR IGNORE INTO settings (key, value) VALUES ('anker_email', '')",
         [],
     )?;
     conn.execute(
-        "INSERT OR IGNORE INTO settings (key, value) VALUES ('anker_api_token', '')",
+        "INSERT OR IGNORE INTO settings (key, value) VALUES ('anker_password', '')",
+        [],
+    )?;
+    conn.execute(
+        "INSERT OR IGNORE INTO settings (key, value) VALUES ('anker_country', 'DE')",
+        [],
+    )?;
+    // Alte URL/Token-Keys aus dem Stub aufraeumen, falls noch vorhanden.
+    conn.execute(
+        "DELETE FROM settings WHERE key IN ('anker_api_url', 'anker_api_token')",
         [],
     )?;
     conn.execute(

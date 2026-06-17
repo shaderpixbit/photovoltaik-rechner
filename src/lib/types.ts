@@ -153,8 +153,11 @@ export interface Settings {
   eigenverbrauch_preis: number;
   /** Fallback-Arbeitspreis (€/kWh) — greift wenn kein Tarif-Eintrag existiert. */
   strom_bezugspreis: number;
-  anker_api_url: string | null;
-  anker_api_token: string | null;
+  /** Anker-Cloud-Account fuer den Tagesdaten-Import. */
+  anker_email: string | null;
+  anker_password: string | null;
+  /** ISO-Country-Code (DE, AT, CH …) — bestimmt EU- vs. COM-Endpoint. */
+  anker_country: string;
 }
 
 /* ── Aggregations ─────────────────────────────────────────────────────────── */

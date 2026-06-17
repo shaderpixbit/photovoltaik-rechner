@@ -53,6 +53,13 @@
           # selbst beschafft, wir liefern nur was Debian-/RPM-Distros brauchen.
           dpkg            # .deb
           rpm             # .rpm
+          # Python für den Anker-Cloud-Sidecar (vendor-import-anker/).
+          # build-sidecar.sh legt ein lokales .venv an und installiert
+          # `anker-solix-api` + `pyinstaller` via pip — daher reichen hier
+          # python3 (mit `venv` + `ensurepip`) und ein C-Compiler, falls eine
+          # Wheel-Dependency nativ kompiliert werden muss.
+          python3
+          gcc
           # Convenience:
           jq
           git
@@ -87,11 +94,13 @@
             │  rust    $(rustc --version | cut -d' ' -f2)
             │  bun     $(bun --version)
             │  node    $(node --version)
+            │  python  $(python3 --version | cut -d' ' -f2)
             │  webkit  4.1   ·   libsoup 3   ·   gtk 3
             ├─────────────────────────────────────────────┤
-            │  bun install           install JS deps
-            │  bun run tauri dev     start desktop app
-            │  bun run tauri build   package installer
+            │  bun install            install JS deps
+            │  bun run tauri dev      start desktop app
+            │  bun run sidecar:build  build Anker sidecar
+            │  bun run tauri:release  bundle installer
             └─────────────────────────────────────────────┘
             EOF
           '';

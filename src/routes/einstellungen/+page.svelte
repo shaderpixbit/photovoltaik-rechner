@@ -44,8 +44,9 @@
   let satzProzent = $state(19);
   let evPreis = $state(0.2);
   let bezugPreis = $state(0.35);
-  let apiUrl = $state("");
-  let apiToken = $state("");
+  let ankerEmail = $state("");
+  let ankerPassword = $state("");
+  let ankerCountry = $state("DE");
 
   async function reload() {
     try {
@@ -60,8 +61,9 @@
       satzProzent = settings.ust_satz_regel * 100;
       evPreis = settings.eigenverbrauch_preis;
       bezugPreis = settings.strom_bezugspreis;
-      apiUrl = settings.anker_api_url ?? "";
-      apiToken = settings.anker_api_token ?? "";
+      ankerEmail = settings.anker_email ?? "";
+      ankerPassword = settings.anker_password ?? "";
+      ankerCountry = settings.anker_country || "DE";
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     }
@@ -158,8 +160,9 @@
       settings.ust_satz_regel = satzProzent / 100;
       settings.eigenverbrauch_preis = evPreis;
       settings.strom_bezugspreis = bezugPreis;
-      settings.anker_api_url = apiUrl.trim() || null;
-      settings.anker_api_token = apiToken.trim() || null;
+      settings.anker_email = ankerEmail.trim() || null;
+      settings.anker_password = ankerPassword.trim() || null;
+      settings.anker_country = (ankerCountry.trim() || "DE").toUpperCase();
       settings.ust_perioden = [...settings.ust_perioden].sort(byDate);
       settings.betreiber_perioden = [...settings.betreiber_perioden].sort(byDate);
       settings.verguetung_perioden = [...settings.verguetung_perioden].sort(byDate);
@@ -386,25 +389,46 @@
 
     <Card>
       <CardHeader
-        title="Hersteller-API (Anker / Fronius / SMA …)"
-        description="Optional. Wenn gesetzt, kann die Tageserfassung Werte importieren."
+        title="Anker-Cloud-Zugang"
+        description="Login für den Tagesdaten-Import auf /erfassung. Inoffizielle API — empfohlen: separater Anker-Account, als Mitglied zur Anlage eingeladen."
       />
-      <div class="grid grid-cols-1 gap-4 px-5 py-5 md:grid-cols-2">
+      <div class="grid grid-cols-1 gap-4 px-5 py-5 md:grid-cols-3">
         <div class="space-y-1.5">
-          <Label>API-URL</Label>
-          <Input bind:value={apiUrl} placeholder="https://…/api/v1/production" />
+          <Label>Anker-Account-Email</Label>
+          <Input
+            type="email"
+            bind:value={ankerEmail}
+            placeholder="pv-readonly@beispiel.de"
+            autocomplete="off"
+          />
         </div>
         <div class="space-y-1.5">
-          <Label>API-Token</Label>
-          <Input type="password" bind:value={apiToken} placeholder="••••••" />
+          <Label>Anker-Passwort</Label>
+          <Input
+            type="password"
+            bind:value={ankerPassword}
+            placeholder="••••••"
+            autocomplete="new-password"
+          />
+        </div>
+        <div class="space-y-1.5">
+          <Label>Land (ISO-Code)</Label>
+          <Input
+            bind:value={ankerCountry}
+            placeholder="DE"
+            maxlength={2}
+          />
+          <p class="text-xs text-[var(--tr-text-dim)]">
+            DE/AT/CH → EU-Endpoint, US/etc. → Global-Endpoint.
+          </p>
         </div>
       </div>
       <div
         class="border-t border-[var(--tr-line)] px-5 py-3 text-xs text-[var(--tr-text-dim)]"
       >
-        Der konkrete Import-Adapter wird ergänzt, sobald die API-Spezifikation
-        feststeht. Bis dahin meldet der Import-Button einen klaren Fehler statt
-        stillschweigend nichts zu tun.
+        Achtung: Anker erlaubt nur eine aktive Session pro Account — die Haupt-
+        Handy-App fliegt sonst raus. Empfohlen: Zweit-Account anlegen und in
+        der Anker-App als „Mitglied" zur Anlage einladen.
       </div>
     </Card>
 

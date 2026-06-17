@@ -184,17 +184,26 @@ export async function importBackup(path: string): Promise<BackupSummary> {
   return await invoke("import_backup", { path });
 }
 
-/* ── Anker / Vendor API (Stub) ───────────────────────────────────────────── */
+/* ── Anker Solix Cloud Import ────────────────────────────────────────────── */
+
+export interface ImportResult {
+  imported: number;
+  skipped: number;
+  errors: string[];
+  warnings: string[];
+  site_id: string | null;
+}
 
 /**
- * Importiert Tageswerte von einer externen API (z.B. Anker SOLIX, Solar.Web…).
- * Implementierung folgt sobald `anker_api_url` und Token konfiguriert sind.
- * Bis dahin: bewusster Fehler, damit die UI nichts Falsches verspricht.
+ * Importiert Tagesdaten aus der Anker-Solix-Cloud fuer den Zeitraum [von, bis].
+ * Spawnt das Python-Sidecar `anker-solix`, das per inoffizieller API die
+ * Tagesaggregate holt und als JSON liefert. Bestehende Tageseintraege werden
+ * idempotent ueberschrieben (Anker liefert Tagessummen).
  */
 export async function importFromVendor(
   von: string,
   bis: string,
-): Promise<{ imported: number }> {
+): Promise<ImportResult> {
   ensureTauri();
   return await invoke("import_from_vendor", { von, bis });
 }

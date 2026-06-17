@@ -137,9 +137,15 @@ pub struct Settings {
     /// Fallback-Arbeitspreis (€/kWh) — wenn kein Tarif-Eintrag für ein Datum existiert.
     pub strom_bezugspreis: f64,
     #[serde(default)]
-    pub anker_api_url: Option<String>,
+    pub anker_email: Option<String>,
     #[serde(default)]
-    pub anker_api_token: Option<String>,
+    pub anker_password: Option<String>,
+    #[serde(default = "default_country")]
+    pub anker_country: String,
+}
+
+fn default_country() -> String {
+    "DE".to_string()
 }
 
 #[derive(Serialize, Clone, Debug)]

@@ -200,8 +200,12 @@ struct SettingsKV {
     ust_satz_regel: f64,
     eigenverbrauch_preis: f64,
     strom_bezugspreis: f64,
-    anker_api_url: Option<String>,
-    anker_api_token: Option<String>,
+    #[serde(default)]
+    anker_email: Option<String>,
+    #[serde(default)]
+    anker_password: Option<String>,
+    #[serde(default)]
+    anker_country: Option<String>,
 }
 
 fn collect_backup(conn: &Connection) -> Result<Backup, rusqlite::Error> {
@@ -274,8 +278,9 @@ fn collect_backup(conn: &Connection) -> Result<Backup, rusqlite::Error> {
         ust_satz_regel: get_setting_f64(conn, "ust_satz_regel", 0.19),
         eigenverbrauch_preis: get_setting_f64(conn, "eigenverbrauch_preis", 0.20),
         strom_bezugspreis: get_setting_f64(conn, "strom_bezugspreis", 0.35),
-        anker_api_url: get_setting(conn, "anker_api_url")?.filter(|s| !s.is_empty()),
-        anker_api_token: get_setting(conn, "anker_api_token")?.filter(|s| !s.is_empty()),
+        anker_email: get_setting(conn, "anker_email")?.filter(|s| !s.is_empty()),
+        anker_password: get_setting(conn, "anker_password")?.filter(|s| !s.is_empty()),
+        anker_country: get_setting(conn, "anker_country")?.filter(|s| !s.is_empty()),
     };
 
     Ok(Backup {
@@ -561,15 +566,21 @@ pub fn import_backup(state: State<DbState>, path: String) -> Result<BackupSummar
     )
     .map_err(|e| e.to_string())?;
     tx.execute(
-        "INSERT INTO settings (key, value) VALUES ('anker_api_url', ?1)
+        "INSERT INTO settings (key, value) VALUES ('anker_email', ?1)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        params![s.anker_api_url.clone().unwrap_or_default()],
+        params![s.anker_email.clone().unwrap_or_default()],
     )
     .map_err(|e| e.to_string())?;
     tx.execute(
-        "INSERT INTO settings (key, value) VALUES ('anker_api_token', ?1)
+        "INSERT INTO settings (key, value) VALUES ('anker_password', ?1)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        params![s.anker_api_token.clone().unwrap_or_default()],
+        params![s.anker_password.clone().unwrap_or_default()],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO settings (key, value) VALUES ('anker_country', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![s.anker_country.clone().unwrap_or_else(|| "DE".to_string())],
     )
     .map_err(|e| e.to_string())?;
 
@@ -583,34 +594,207 @@ pub fn import_backup(state: State<DbState>, path: String) -> Result<BackupSummar
     })
 }
 
-// ── Vendor-API Import (Stub) ────────────────────────────────────────────────
+// ── Vendor-API Import (Anker Solix Cloud via Python-Sidecar) ────────────────
 
 #[derive(Serialize)]
 pub struct ImportResult {
     pub imported: i64,
+    pub skipped: i64,
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+    pub site_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SidecarRow {
+    date: String,
+    erzeugung_kwh: f64,
+    eigenverbrauch_kwh: f64,
+    einspeisung_kwh: f64,
+    #[serde(default)]
+    netzbezug_kwh: Option<f64>,
+}
+
+#[derive(Deserialize)]
+struct SidecarOutput {
+    #[serde(default)]
+    rows: Vec<SidecarRow>,
+    #[serde(default)]
+    site_id: Option<String>,
+    #[serde(default)]
+    warnings: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct SidecarError {
+    error: String,
+}
+
+/// Resolves the Anker-Solix sidecar command. Tries (in order):
+/// 1. `<exe_dir>/anker-solix(.exe)` — production bundle.
+/// 2. `<exe_dir>/anker-solix-<triple>(.exe)` — Tauri sidecar naming convention.
+/// 3. `python3 <cwd>/vendor-import-anker/main.py` — dev fallback.
+fn resolve_sidecar() -> Result<std::process::Command, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe_dir = exe
+        .parent()
+        .ok_or_else(|| "current_exe hat kein Parent-Verzeichnis".to_string())?;
+    let ext = if cfg!(windows) { ".exe" } else { "" };
+
+    // Variante 1: nackter Name neben der Executable.
+    let plain = exe_dir.join(format!("anker-solix{ext}"));
+    if plain.is_file() {
+        return Ok(std::process::Command::new(plain));
+    }
+
+    // Variante 2: Tauri-Sidecar-Naming mit Target-Triple-Suffix.
+    if let Ok(entries) = std::fs::read_dir(exe_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with("anker-solix-") && name_str.ends_with(ext) {
+                return Ok(std::process::Command::new(entry.path()));
+            }
+        }
+    }
+
+    // Variante 3: Dev-Fallback — Python-Script direkt im Repo aufrufen.
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    for candidate in [
+        cwd.join("vendor-import-anker").join("main.py"),
+        cwd.join("..").join("vendor-import-anker").join("main.py"),
+    ] {
+        if candidate.is_file() {
+            let mut cmd = std::process::Command::new("python3");
+            cmd.arg(candidate);
+            return Ok(cmd);
+        }
+    }
+
+    Err(
+        "Anker-Sidecar nicht gefunden. \
+         Im Dev-Modus `python3 vendor-import-anker/main.py` testen, \
+         fuer Release `./vendor-import-anker/build-sidecar.sh` ausfuehren."
+            .into(),
+    )
 }
 
 #[command]
 pub fn import_from_vendor(
     state: State<DbState>,
-    _von: String,
-    _bis: String,
+    von: String,
+    bis: String,
 ) -> Result<ImportResult, String> {
-    let db = state.0.lock().map_err(|e| e.to_string())?;
-    let url = get_setting(&db, "anker_api_url")
-        .map_err(|e| e.to_string())?
-        .filter(|s| !s.is_empty());
-    if url.is_none() {
-        return Err(
-            "Keine Hersteller-API konfiguriert. \
-             Hinterlege URL und Token unter Einstellungen → Anker / Vendor-API."
-                .into(),
-        );
+    // Settings (Login-Daten) vor dem Sidecar-Aufruf lesen, Lock dann freigeben.
+    let (email, password, country) = {
+        let db = state.0.lock().map_err(|e| e.to_string())?;
+        let email = get_setting(&db, "anker_email")
+            .map_err(|e| e.to_string())?
+            .filter(|s| !s.is_empty());
+        let password = get_setting(&db, "anker_password")
+            .map_err(|e| e.to_string())?
+            .filter(|s| !s.is_empty());
+        let country = get_setting(&db, "anker_country")
+            .map_err(|e| e.to_string())?
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "DE".to_string());
+        (email, password, country)
+    };
+
+    let (email, password) = match (email, password) {
+        (Some(e), Some(p)) => (e, p),
+        _ => {
+            return Err(
+                "Anker-Login fehlt. Hinterlege Email + Passwort unter \
+                 Einstellungen → Anker-Cloud-Zugang."
+                    .into(),
+            );
+        }
+    };
+
+    let mut cmd = resolve_sidecar()?;
+    cmd.args(["--von", &von, "--bis", &bis])
+        .env("ANKER_EMAIL", &email)
+        .env("ANKER_PASSWORD", &password)
+        .env("ANKER_COUNTRY", &country)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    let output = cmd
+        .output()
+        .map_err(|e| format!("Sidecar-Start fehlgeschlagen: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // Sidecar serialisiert Fehler als JSON {"error": "..."} auf stderr.
+        if let Ok(parsed) = serde_json::from_str::<SidecarError>(stderr.trim()) {
+            return Err(parsed.error);
+        }
+        return Err(format!(
+            "Sidecar Exit-Code {:?}: {}",
+            output.status.code(),
+            stderr.trim()
+        ));
     }
-    // TODO: HTTP-Aufruf gegen URL + Token, parse JSON, INSERT/UPDATE daily_production.
-    // Implementierung folgt sobald die konkrete API (Anker SOLIX / Fronius / SMA …)
-    // feststeht.
-    Err("Hersteller-API-Import ist noch nicht implementiert. \
-         Bitte Tageswerte vorerst manuell erfassen."
-        .into())
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: SidecarOutput = serde_json::from_str(stdout.trim()).map_err(|e| {
+        format!(
+            "Sidecar-Ausgabe nicht parsbar: {e}. Stdout: {}",
+            stdout.trim()
+        )
+    })?;
+
+    // UPSERT in einer Transaktion. Bestehende Eintraege werden ueberschrieben
+    // (Anker liefert taegliche Aggregate — Re-Imports sollen idempotent sein).
+    let mut db = state.0.lock().map_err(|e| e.to_string())?;
+    let tx = db.transaction().map_err(|e| e.to_string())?;
+    let mut imported: i64 = 0;
+    let mut skipped: i64 = 0;
+    let mut errors: Vec<String> = Vec::new();
+    for row in &parsed.rows {
+        // Plausibilitaet: Einspeisung > Erzeugung waere widerspruechlich — dann skippen.
+        if row.einspeisung_kwh > row.erzeugung_kwh + 0.5 {
+            skipped += 1;
+            errors.push(format!(
+                "{}: Einspeisung ({:.2}) > Erzeugung ({:.2}) — uebersprungen.",
+                row.date, row.einspeisung_kwh, row.erzeugung_kwh
+            ));
+            continue;
+        }
+        let res = tx.execute(
+            "INSERT INTO daily_production
+                (date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh, notiz)
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL)
+             ON CONFLICT(date) DO UPDATE SET
+                erzeugung_kwh = excluded.erzeugung_kwh,
+                eigenverbrauch_kwh = excluded.eigenverbrauch_kwh,
+                einspeisung_kwh = excluded.einspeisung_kwh,
+                netzbezug_kwh = excluded.netzbezug_kwh",
+            params![
+                row.date,
+                row.erzeugung_kwh,
+                row.eigenverbrauch_kwh,
+                row.einspeisung_kwh,
+                row.netzbezug_kwh,
+            ],
+        );
+        match res {
+            Ok(_) => imported += 1,
+            Err(e) => {
+                skipped += 1;
+                errors.push(format!("{}: {}", row.date, e));
+            }
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+
+    Ok(ImportResult {
+        imported,
+        skipped,
+        errors,
+        warnings: parsed.warnings,
+        site_id: parsed.site_id,
+    })
 }

@@ -382,12 +382,16 @@ pub fn get_settings(state: State<DbState>) -> Result<Settings, String> {
     let betreiber_perioden = load_betreiber_perioden(&db).map_err(|e| e.to_string())?;
     let verguetung_perioden = load_verguetung_perioden(&db).map_err(|e| e.to_string())?;
     let stromtarif_perioden = load_stromtarif_perioden(&db).map_err(|e| e.to_string())?;
-    let url = get_setting(&db, "anker_api_url")
+    let email = get_setting(&db, "anker_email")
         .map_err(|e| e.to_string())?
         .filter(|s| !s.is_empty());
-    let token = get_setting(&db, "anker_api_token")
+    let password = get_setting(&db, "anker_password")
         .map_err(|e| e.to_string())?
         .filter(|s| !s.is_empty());
+    let country = get_setting(&db, "anker_country")
+        .map_err(|e| e.to_string())?
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "DE".to_string());
     Ok(Settings {
         ust_perioden,
         betreiber_perioden,
@@ -396,8 +400,9 @@ pub fn get_settings(state: State<DbState>) -> Result<Settings, String> {
         ust_satz_regel: get_setting_f64(&db, "ust_satz_regel", 0.19),
         eigenverbrauch_preis: get_setting_f64(&db, "eigenverbrauch_preis", 0.20),
         strom_bezugspreis: get_setting_f64(&db, "strom_bezugspreis", 0.35),
-        anker_api_url: url,
-        anker_api_token: token,
+        anker_email: email,
+        anker_password: password,
+        anker_country: country,
     })
 }
 
@@ -420,16 +425,22 @@ pub fn set_settings(state: State<DbState>, settings: Settings) -> Result<(), Str
     .map_err(|e| e.to_string())?;
     set_setting(
         &db,
-        "anker_api_url",
-        settings.anker_api_url.as_deref().unwrap_or(""),
+        "anker_email",
+        settings.anker_email.as_deref().unwrap_or(""),
     )
     .map_err(|e| e.to_string())?;
     set_setting(
         &db,
-        "anker_api_token",
-        settings.anker_api_token.as_deref().unwrap_or(""),
+        "anker_password",
+        settings.anker_password.as_deref().unwrap_or(""),
     )
     .map_err(|e| e.to_string())?;
+    let country = if settings.anker_country.trim().is_empty() {
+        "DE"
+    } else {
+        settings.anker_country.as_str()
+    };
+    set_setting(&db, "anker_country", country).map_err(|e| e.to_string())?;
 
     db.execute("DELETE FROM ust_perioden", [])
         .map_err(|e| e.to_string())?;
