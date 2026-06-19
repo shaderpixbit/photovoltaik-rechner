@@ -840,12 +840,20 @@ fn resolve_sidecar(spec: &SidecarSpec) -> Result<std::process::Command, String> 
 }
 
 #[command]
-pub fn import_from_vendor(
+pub async fn import_from_vendor(
     app: AppHandle,
-    state: State<DbState>,
+    state: State<'_, DbState>,
     von: String,
     bis: String,
 ) -> Result<ImportResult, String> {
+    // WICHTIG: `async fn` — sonst laeuft das Kommando auf dem GTK-Main-Thread
+    // (Linux/WebKitGTK), und `child.wait()` + die `for line in
+    // stdout_reader.lines()`-Schleife frieren das gesamte UI ein (kein Banner,
+    // keine Navigation, IPC-Queue staut sich) waehrend der Sidecar laeuft. Mit
+    // `async fn` haengt Tauri das Kommando an den Tokio-Worker-Pool, der GTK-
+    // Loop bleibt frei. Die inneren `Read::lines()`-Calls sind weiterhin
+    // synchron — sie blockieren EINEN Tokio-Worker, was bei der Default-Multi-
+    // Thread-Runtime keinen Stau verursacht.
     // Settings (Vendor-Wahl + Credentials) vor dem Sidecar-Aufruf lesen,
     // Lock dann freigeben (Sidecar laeuft 1-300s, blockiert sonst die DB).
     let (vendor, anker_email, anker_password, anker_country, se_api_key, se_site_id) = {
