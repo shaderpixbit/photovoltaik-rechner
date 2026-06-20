@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { aggregate, getDashboard, listDailyRange } from "$lib/api";
-  import { formatEUR, formatKWh, formatDateDE, todayISO } from "$lib/utils";
+  import { formatEUR, formatKWh, formatPct, formatDateDE, todayISO } from "$lib/utils";
   import type { Aggregat, DailyProduction, DashboardSnapshot } from "$lib/types";
   import StatTile from "$lib/components/StatTile.svelte";
   import BarChart from "$lib/components/BarChart.svelte";
@@ -112,6 +112,32 @@
       };
     });
   });
+
+  let jahresSummen = $derived.by(() => {
+    return monthly.reduce(
+      (acc, r) => ({
+        erz: acc.erz + r.erzeugung_kwh,
+        ev: acc.ev + r.eigenverbrauch_kwh,
+        ei: acc.ei + r.einspeisung_kwh,
+        nb: acc.nb + r.netzbezug_kwh,
+        spl: acc.spl + r.speicher_laden_kwh,
+        spe: acc.spe + r.speicher_entladen_kwh,
+        tage: acc.tage + r.tage,
+      }),
+      { erz: 0, ev: 0, ei: 0, nb: 0, spl: 0, spe: 0, tage: 0 },
+    );
+  });
+
+  let evQuoteJahr = $derived(
+    jahresSummen.erz > 0 ? jahresSummen.ev / jahresSummen.erz : null,
+  );
+  let autarkieJahresQuote = $derived.by(() => {
+    const gesamt = jahresSummen.ev + jahresSummen.nb;
+    return gesamt > 0 ? jahresSummen.ev / gesamt : null;
+  });
+  let durchschnittErzTag = $derived(
+    jahresSummen.tage > 0 ? jahresSummen.erz / jahresSummen.tage : null,
+  );
 </script>
 
 <div class="space-y-6">
@@ -177,7 +203,7 @@
             ? `${formatDateDE(snap.heute.date)}`
             : "Noch keine Eingabe für heute"}
         />
-        <div class="grid grid-cols-3 divide-x divide-[var(--tr-line)]">
+        <div class="grid grid-cols-2 divide-[var(--tr-line)] md:grid-cols-4 md:divide-x">
           <div class="px-5 py-4">
             <div class="text-xs uppercase tracking-wide text-[var(--tr-text-dim)]">
               Erzeugung
@@ -206,6 +232,19 @@
               style="color: var(--tr-sun);"
             >
               {formatKWh(snap.heute?.einspeisung_kwh ?? 0)}
+            </div>
+          </div>
+          <div class="px-5 py-4">
+            <div class="text-xs uppercase tracking-wide text-[var(--tr-text-dim)]">
+              Netzbezug
+            </div>
+            <div
+              class="mt-1 font-mono text-xl font-semibold"
+              style="color: var(--tr-violet);"
+            >
+              {snap.heute?.netzbezug_kwh != null
+                ? formatKWh(snap.heute.netzbezug_kwh)
+                : "—"}
             </div>
           </div>
         </div>
@@ -283,6 +322,93 @@
         {/if}
       </div>
     </div>
+
+    <Card>
+      <CardHeader
+        title="Jahr {currentYear}"
+        description={`Summen über ${jahresSummen.tage} erfasste Tage`}
+      />
+      <div class="grid grid-cols-2 divide-[var(--tr-line)] md:grid-cols-4 lg:grid-cols-7 md:divide-x">
+        <div class="px-5 py-4">
+          <div class="text-xs uppercase tracking-wide text-[var(--tr-text-dim)]">
+            Erzeugung
+          </div>
+          <div class="mt-1 font-mono text-lg font-semibold">
+            {formatKWh(jahresSummen.erz)}
+          </div>
+        </div>
+        <div class="px-5 py-4">
+          <div class="text-xs uppercase tracking-wide text-[var(--tr-text-dim)]">
+            Eigenverbrauch
+          </div>
+          <div class="mt-1 font-mono text-lg font-semibold" style="color: var(--tr-green);">
+            {formatKWh(jahresSummen.ev)}
+          </div>
+        </div>
+        <div class="px-5 py-4">
+          <div class="text-xs uppercase tracking-wide text-[var(--tr-text-dim)]">
+            Einspeisung
+          </div>
+          <div class="mt-1 font-mono text-lg font-semibold" style="color: var(--tr-sun);">
+            {formatKWh(jahresSummen.ei)}
+          </div>
+        </div>
+        <div class="px-5 py-4">
+          <div class="text-xs uppercase tracking-wide text-[var(--tr-text-dim)]">
+            Netzbezug
+          </div>
+          <div class="mt-1 font-mono text-lg font-semibold" style="color: var(--tr-violet);">
+            {jahresSummen.nb > 0 ? formatKWh(jahresSummen.nb) : "—"}
+          </div>
+        </div>
+        <div class="px-5 py-4">
+          <div class="text-xs uppercase tracking-wide text-[var(--tr-text-dim)]">
+            Speicher ↓
+          </div>
+          <div class="mt-1 font-mono text-lg font-semibold text-[var(--tr-text-dim)]">
+            {jahresSummen.spl > 0 ? formatKWh(jahresSummen.spl) : "—"}
+          </div>
+        </div>
+        <div class="px-5 py-4">
+          <div class="text-xs uppercase tracking-wide text-[var(--tr-text-dim)]">
+            Speicher ↑
+          </div>
+          <div class="mt-1 font-mono text-lg font-semibold text-[var(--tr-text-dim)]">
+            {jahresSummen.spe > 0 ? formatKWh(jahresSummen.spe) : "—"}
+          </div>
+        </div>
+        <div class="px-5 py-4">
+          <div class="text-xs uppercase tracking-wide text-[var(--tr-text-dim)]">
+            ⌀ pro Tag
+          </div>
+          <div class="mt-1 font-mono text-lg font-semibold">
+            {durchschnittErzTag !== null ? formatKWh(durchschnittErzTag) : "—"}
+          </div>
+        </div>
+      </div>
+      {#if evQuoteJahr !== null || autarkieJahresQuote !== null}
+        <div
+          class="flex flex-wrap gap-x-6 gap-y-1 border-t border-[var(--tr-line)] px-5 py-3 text-xs text-[var(--tr-text-dim)]"
+        >
+          {#if evQuoteJahr !== null}
+            <div>
+              Eigenverbrauchsquote:
+              <span class="font-mono font-medium text-[var(--tr-text)]">
+                {formatPct(evQuoteJahr)}
+              </span>
+            </div>
+          {/if}
+          {#if autarkieJahresQuote !== null}
+            <div>
+              Autarkiegrad:
+              <span class="font-mono font-medium text-[var(--tr-text)]">
+                {formatPct(autarkieJahresQuote)}
+              </span>
+            </div>
+          {/if}
+        </div>
+      {/if}
+    </Card>
 
     <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
       <Card>

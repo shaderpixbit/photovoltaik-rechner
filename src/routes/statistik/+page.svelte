@@ -45,10 +45,26 @@
         ev: acc.ev + r.eigenverbrauch_kwh,
         ei: acc.ei + r.einspeisung_kwh,
         nb: acc.nb + r.netzbezug_kwh,
+        spl: acc.spl + r.speicher_laden_kwh,
+        spe: acc.spe + r.speicher_entladen_kwh,
         tage: acc.tage + r.tage,
       }),
-      { erz: 0, ev: 0, ei: 0, nb: 0, tage: 0 },
+      { erz: 0, ev: 0, ei: 0, nb: 0, spl: 0, spe: 0, tage: 0 },
     ),
+  );
+
+  let autarkieQuote = $derived.by(() => {
+    const gesamt = totals.ev + totals.nb;
+    return gesamt > 0 ? totals.ev / gesamt : null;
+  });
+  let bestBucket = $derived.by(() => {
+    if (rows.length === 0) return null;
+    return rows.reduce((best, r) =>
+      r.erzeugung_kwh > best.erzeugung_kwh ? r : best,
+    );
+  });
+  let durchschnittErzTag = $derived(
+    totals.tage > 0 ? totals.erz / totals.tage : null,
   );
 
   function bucketLabel(b: string): string {
@@ -168,6 +184,62 @@
     </Card>
   </div>
 
+  <div class="grid grid-cols-2 gap-4 lg:grid-cols-5">
+    <Card>
+      <div class="px-5 py-4">
+        <div class="text-xs uppercase tracking-wide text-[var(--tr-text-dim)]">
+          Speicher Laden
+        </div>
+        <div class="mt-1 font-mono text-xl font-semibold text-[var(--tr-text-dim)]">
+          {totals.spl > 0 ? formatKWh(totals.spl) : "—"}
+        </div>
+      </div>
+    </Card>
+    <Card>
+      <div class="px-5 py-4">
+        <div class="text-xs uppercase tracking-wide text-[var(--tr-text-dim)]">
+          Speicher Entladen
+        </div>
+        <div class="mt-1 font-mono text-xl font-semibold text-[var(--tr-text-dim)]">
+          {totals.spe > 0 ? formatKWh(totals.spe) : "—"}
+        </div>
+      </div>
+    </Card>
+    <Card>
+      <div class="px-5 py-4">
+        <div class="text-xs uppercase tracking-wide text-[var(--tr-text-dim)]">
+          Autarkiegrad
+        </div>
+        <div class="mt-1 font-mono text-xl font-semibold">
+          {formatPct(autarkieQuote ?? undefined)}
+        </div>
+      </div>
+    </Card>
+    <Card>
+      <div class="px-5 py-4">
+        <div class="text-xs uppercase tracking-wide text-[var(--tr-text-dim)]">
+          ⌀ Erzeugung pro Tag
+        </div>
+        <div class="mt-1 font-mono text-xl font-semibold">
+          {durchschnittErzTag !== null ? formatKWh(durchschnittErzTag) : "—"}
+        </div>
+      </div>
+    </Card>
+    <Card>
+      <div class="px-5 py-4">
+        <div class="text-xs uppercase tracking-wide text-[var(--tr-text-dim)]">
+          Bester Bucket
+        </div>
+        <div class="mt-1 font-mono text-xl font-semibold">
+          {bestBucket ? formatKWh(bestBucket.erzeugung_kwh) : "—"}
+        </div>
+        <div class="mt-0.5 text-xs text-[var(--tr-text-faint)]">
+          {bestBucket ? bucketLabel(bestBucket.bucket) : ""}
+        </div>
+      </div>
+    </Card>
+  </div>
+
   <Card>
     <CardHeader title="Aufschlüsselung" description={`${rows.length} Buckets, ${totals.tage} Tage`} />
     {#if rows.length === 0}
@@ -184,8 +256,11 @@
             <th class="px-5 py-2 text-right">Erzeugung</th>
             <th class="px-5 py-2 text-right">Eigenverbr.</th>
             <th class="px-5 py-2 text-right">Einspeis.</th>
+            <th class="px-5 py-2 text-right">Netzbezug</th>
+            <th class="px-5 py-2 text-right" title="Solar → Akku">Sp ↓</th>
+            <th class="px-5 py-2 text-right" title="Akku → Haus">Sp ↑</th>
             <th class="px-5 py-2 text-right">Quote</th>
-            <th class="w-[40%] px-5 py-2">Verteilung</th>
+            <th class="w-[30%] px-5 py-2">Verteilung</th>
           </tr>
         </thead>
         <tbody>
@@ -200,6 +275,15 @@
               </td>
               <td class="px-5 py-2 text-right font-mono">
                 {formatKWh(r.einspeisung_kwh)}
+              </td>
+              <td class="px-5 py-2 text-right font-mono text-[var(--tr-text-dim)]">
+                {r.netzbezug_kwh > 0 ? formatKWh(r.netzbezug_kwh) : "—"}
+              </td>
+              <td class="px-5 py-2 text-right font-mono text-[var(--tr-text-dim)]">
+                {r.speicher_laden_kwh > 0 ? formatKWh(r.speicher_laden_kwh) : "—"}
+              </td>
+              <td class="px-5 py-2 text-right font-mono text-[var(--tr-text-dim)]">
+                {r.speicher_entladen_kwh > 0 ? formatKWh(r.speicher_entladen_kwh) : "—"}
               </td>
               <td class="px-5 py-2 text-right font-mono">{formatPct(quote)}</td>
               <td class="px-5 py-2">
