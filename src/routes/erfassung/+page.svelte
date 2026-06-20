@@ -721,6 +721,7 @@
             <th class="px-5 py-2 text-right">Erzeugung</th>
             <th class="px-5 py-2 text-right">Eigenverbr.</th>
             <th class="px-5 py-2 text-right">Einspeisung</th>
+            <th class="px-5 py-2 text-right" title="Netzbezug aus dem Stromnetz">Netzbezug</th>
             <th class="px-5 py-2 text-right" title="Solar → Akku">Sp ↓</th>
             <th class="px-5 py-2 text-right" title="Akku → Haus">Sp ↑</th>
             <th class="px-5 py-2 text-left">Notiz</th>
@@ -742,6 +743,9 @@
               </td>
               <td class="px-5 py-2 text-right font-mono">
                 {formatKWh(r.einspeisung_kwh)}
+              </td>
+              <td class="px-5 py-2 text-right font-mono text-[var(--tr-text-dim)]">
+                {r.netzbezug_kwh != null ? formatKWh(r.netzbezug_kwh) : "—"}
               </td>
               <td class="px-5 py-2 text-right font-mono text-[var(--tr-text-dim)]">
                 {r.speicher_laden_kwh != null ? formatKWh(r.speicher_laden_kwh) : "—"}
