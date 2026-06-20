@@ -173,6 +173,7 @@ pub struct Aggregat {
     pub erzeugung_kwh: f64,
     pub eigenverbrauch_kwh: f64,
     pub einspeisung_kwh: f64,
+    pub netzbezug_kwh: f64,
     pub tage: i64,
 }
 

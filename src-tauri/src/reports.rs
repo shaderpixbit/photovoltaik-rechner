@@ -58,6 +58,7 @@ pub(crate) fn aggregate_production_for(
                 SUM(erzeugung_kwh)     AS erz,
                 SUM(eigenverbrauch_kwh) AS ev,
                 SUM(einspeisung_kwh)   AS einsp,
+                SUM(COALESCE(netzbezug_kwh, 0)) AS nb,
                 COUNT(*)               AS tage
          FROM daily_production
          {where_clause}
@@ -76,7 +77,8 @@ pub(crate) fn aggregate_production_for(
                 erzeugung_kwh: r.get::<_, Option<f64>>(1)?.unwrap_or(0.0),
                 eigenverbrauch_kwh: r.get::<_, Option<f64>>(2)?.unwrap_or(0.0),
                 einspeisung_kwh: r.get::<_, Option<f64>>(3)?.unwrap_or(0.0),
-                tage: r.get::<_, Option<i64>>(4)?.unwrap_or(0),
+                netzbezug_kwh: r.get::<_, Option<f64>>(4)?.unwrap_or(0.0),
+                tage: r.get::<_, Option<i64>>(5)?.unwrap_or(0),
             })
         })
         .map_err(|e| e.to_string())?

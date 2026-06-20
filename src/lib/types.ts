@@ -187,6 +187,7 @@ export interface Aggregat {
   erzeugung_kwh: number;
   eigenverbrauch_kwh: number;
   einspeisung_kwh: number;
+  netzbezug_kwh: number;
   tage: number;
 }
 

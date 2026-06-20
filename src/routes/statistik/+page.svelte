@@ -44,9 +44,10 @@
         erz: acc.erz + r.erzeugung_kwh,
         ev: acc.ev + r.eigenverbrauch_kwh,
         ei: acc.ei + r.einspeisung_kwh,
+        nb: acc.nb + r.netzbezug_kwh,
         tage: acc.tage + r.tage,
       }),
-      { erz: 0, ev: 0, ei: 0, tage: 0 },
+      { erz: 0, ev: 0, ei: 0, nb: 0, tage: 0 },
     ),
   );
 
@@ -105,7 +106,7 @@
     <Card><div class="p-5 text-sm text-[var(--tr-red)]">{error}</div></Card>
   {/if}
 
-  <div class="grid grid-cols-2 gap-4 lg:grid-cols-4">
+  <div class="grid grid-cols-2 gap-4 lg:grid-cols-5">
     <Card>
       <div class="px-5 py-4">
         <div class="text-xs uppercase tracking-wide text-[var(--tr-text-dim)]">
@@ -139,6 +140,19 @@
           style="color: var(--tr-sun);"
         >
           {formatKWh(totals.ei)}
+        </div>
+      </div>
+    </Card>
+    <Card>
+      <div class="px-5 py-4">
+        <div class="text-xs uppercase tracking-wide text-[var(--tr-text-dim)]">
+          Netzbezug
+        </div>
+        <div
+          class="mt-1 font-mono text-xl font-semibold"
+          style="color: var(--tr-violet);"
+        >
+          {formatKWh(totals.nb)}
         </div>
       </div>
     </Card>
