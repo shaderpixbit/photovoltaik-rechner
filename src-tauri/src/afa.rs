@@ -12,7 +12,11 @@ pub(crate) fn afa_monate(asset: &Asset, jahr: i32) -> i32 {
     let Some(ib) = NaiveDate::parse_from_str(&asset.inbetriebnahme, "%Y-%m-%d").ok() else {
         return 0;
     };
-    let start = if jahr == ib.year() { ib.month() as i32 } else { 1 };
+    let start = if jahr == ib.year() {
+        ib.month() as i32
+    } else {
+        1
+    };
     let mut ende = 12;
     if jahr < ib.year() {
         return 0;
@@ -45,7 +49,11 @@ pub(crate) fn afa_for_year(asset: &Asset, jahr: i32) -> i64 {
         return 0;
     };
     if asset.afa_methode == "gwg_sofort" {
-        return if jahr == ib.year() { afa_basis(asset) } else { 0 };
+        return if jahr == ib.year() {
+            afa_basis(asset)
+        } else {
+            0
+        };
     }
     // linear
     let nd = asset.nutzungsdauer_jahre.max(1) as f64;

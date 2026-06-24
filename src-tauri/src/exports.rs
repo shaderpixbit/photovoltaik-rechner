@@ -9,11 +9,11 @@ use std::io::{BufRead, BufReader};
 use std::sync::{Arc, Mutex};
 use tauri::{command, AppHandle, Emitter, State};
 
-use crate::crud::list_assets_internal;
+use crate::crud::{list_assets_internal, map_daily, DAILY_COLS};
 use crate::db::{get_cents, get_setting, get_setting_f64, DbState};
 use crate::types::{
-    Asset, BackupSummary, BetreiberPeriode, DailyProduction, Expense, Payout,
-    StromtarifPeriode, UstPeriode, VerguetungPeriode,
+    Asset, BackupSummary, BetreiberPeriode, DailyProduction, Expense, Payout, StromtarifPeriode,
+    UstPeriode, VerguetungPeriode,
 };
 use crate::verlauf::{
     load_betreiber_perioden, load_perioden, load_stromtarif_perioden, load_verguetung_perioden,
@@ -38,12 +38,8 @@ fn fmt_f64(v: f64) -> String {
 }
 
 #[command]
-pub fn export_buchungen_csv(
-    state: State<DbState>,
-    path: String,
-    jahr: i32,
-) -> Result<i64, String> {
-    let db = state.0.lock().map_err(|e| e.to_string())?;
+pub fn export_buchungen_csv(state: State<DbState>, path: String, jahr: i32) -> Result<i64, String> {
+    let db = state.inner().conn()?;
     let jahr_start = format!("{:04}-01-01", jahr);
     let jahr_end = format!("{:04}-12-31", jahr);
 
@@ -145,7 +141,7 @@ pub fn export_buchungen_csv(
 
 #[command]
 pub fn export_anlagen_csv(state: State<DbState>, path: String) -> Result<i64, String> {
-    let db = state.0.lock().map_err(|e| e.to_string())?;
+    let db = state.inner().conn()?;
     let assets = list_assets_internal(&db).map_err(|e| e.to_string())?;
     let mut out = String::new();
     out.push_str(
@@ -217,24 +213,11 @@ struct SettingsKV {
 }
 
 fn collect_backup(conn: &Connection) -> Result<Backup, rusqlite::Error> {
-    let mut stmt = conn.prepare(
-        "SELECT date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh,
-                speicher_laden_kwh, speicher_entladen_kwh, notiz
-         FROM daily_production ORDER BY date ASC",
-    )?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {DAILY_COLS} FROM daily_production ORDER BY date ASC"
+    ))?;
     let daily: Vec<DailyProduction> = stmt
-        .query_map([], |r| {
-            Ok(DailyProduction {
-                date: r.get(0)?,
-                erzeugung_kwh: r.get(1)?,
-                eigenverbrauch_kwh: r.get(2)?,
-                einspeisung_kwh: r.get(3)?,
-                netzbezug_kwh: r.get(4)?,
-                speicher_laden_kwh: r.get(5)?,
-                speicher_entladen_kwh: r.get(6)?,
-                notiz: r.get(7)?,
-            })
-        })?
+        .query_map([], map_daily)?
         .filter_map(|r| r.ok())
         .collect();
 
@@ -314,7 +297,7 @@ fn collect_backup(conn: &Connection) -> Result<Backup, rusqlite::Error> {
 
 #[command]
 pub fn export_backup(state: State<DbState>, path: String) -> Result<BackupSummary, String> {
-    let db = state.0.lock().map_err(|e| e.to_string())?;
+    let db = state.inner().conn()?;
     let backup = collect_backup(&db).map_err(|e| e.to_string())?;
     let summary = BackupSummary {
         daily: backup.daily_production.len() as i64,
@@ -389,10 +372,7 @@ pub fn import_backup(state: State<DbState>, path: String) -> Result<BackupSummar
     // Version-Check zuerst, dann ggf. v1 (€ als Float) → v2 (Cents als Int) migrieren.
     let mut raw: serde_json::Value =
         serde_json::from_str(&json).map_err(|e| format!("JSON-Format ungültig: {}", e))?;
-    let version = raw
-        .get("version")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0) as u32;
+    let version = raw.get("version").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
     match version {
         1 => migrate_backup_v1_to_v2(&mut raw),
         2 => {}
@@ -406,7 +386,7 @@ pub fn import_backup(state: State<DbState>, path: String) -> Result<BackupSummar
     let backup: Backup = serde_json::from_value(raw)
         .map_err(|e| format!("Backup-Struktur ungültig nach Migration: {}", e))?;
 
-    let mut db = state.0.lock().map_err(|e| e.to_string())?;
+    let mut db = state.inner().conn()?;
     let tx = db.transaction().map_err(|e| e.to_string())?;
 
     tx.execute("DELETE FROM daily_production", [])
@@ -691,7 +671,7 @@ fn commit_batch(
     if batch.is_empty() {
         return Ok(());
     }
-    let mut db = state.0.lock().map_err(|e| e.to_string())?;
+    let mut db = state.inner().conn()?;
     let tx = db.transaction().map_err(|e| e.to_string())?;
     for row in batch.iter() {
         if row.erzeugung_kwh <= 0.0 {
@@ -857,7 +837,7 @@ pub async fn import_from_vendor(
     // Settings (Vendor-Wahl + Credentials) vor dem Sidecar-Aufruf lesen,
     // Lock dann freigeben (Sidecar laeuft 1-300s, blockiert sonst die DB).
     let (vendor, anker_email, anker_password, anker_country, se_api_key, se_site_id) = {
-        let db = state.0.lock().map_err(|e| e.to_string())?;
+        let db = state.inner().conn()?;
         let vendor = get_setting(&db, "vendor")
             .map_err(|e| e.to_string())?
             .filter(|s| !s.is_empty())
@@ -878,7 +858,14 @@ pub async fn import_from_vendor(
         let se_site_id = get_setting(&db, "solaredge_site_id")
             .map_err(|e| e.to_string())?
             .filter(|s| !s.is_empty());
-        (vendor, anker_email, anker_password, anker_country, se_api_key, se_site_id)
+        (
+            vendor,
+            anker_email,
+            anker_password,
+            anker_country,
+            se_api_key,
+            se_site_id,
+        )
     };
 
     let spec = spec_for(&vendor)?;
@@ -895,11 +882,9 @@ pub async fn import_from_vendor(
             let (email, password) = match (anker_email, anker_password) {
                 (Some(e), Some(p)) => (e, p),
                 _ => {
-                    return Err(
-                        "Anker-Login fehlt. Hinterlege Email + Passwort unter \
+                    return Err("Anker-Login fehlt. Hinterlege Email + Passwort unter \
                          Einstellungen → Hersteller-API."
-                            .into(),
-                    );
+                        .into());
                 }
             };
             cmd.env("ANKER_EMAIL", email)
@@ -910,11 +895,9 @@ pub async fn import_from_vendor(
             let (api_key, site_id) = match (se_api_key, se_site_id) {
                 (Some(k), Some(s)) => (k, s),
                 _ => {
-                    return Err(
-                        "SolarEdge-Zugang fehlt. Hinterlege API-Key + Site-ID \
+                    return Err("SolarEdge-Zugang fehlt. Hinterlege API-Key + Site-ID \
                          unter Einstellungen → Hersteller-API."
-                            .into(),
-                    );
+                        .into());
                 }
             };
             cmd.env("SOLAREDGE_API_KEY", api_key)
@@ -1003,9 +986,7 @@ pub async fn import_from_vendor(
     // Finalen Batch committen, dann auf Sidecar-Exit warten.
     commit_batch(&state, &mut batch, &mut imported, &mut skipped, &mut errors)?;
 
-    let status = child
-        .wait()
-        .map_err(|e| format!("Sidecar-Wait: {e}"))?;
+    let status = child.wait().map_err(|e| format!("Sidecar-Wait: {e}"))?;
     let _ = stderr_handle.join();
     let stderr_content = stderr_buf.lock().map(|s| s.clone()).unwrap_or_default();
 

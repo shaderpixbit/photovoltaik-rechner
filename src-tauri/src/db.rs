@@ -3,9 +3,17 @@
 
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 pub struct DbState(pub Mutex<Connection>);
+
+impl DbState {
+    /// Sperrt den Connection-Mutex und mappt einen vergifteten Lock auf
+    /// einen `String`-Fehler — die Form, die jeder `#[command]` braucht.
+    pub fn conn(&self) -> Result<MutexGuard<'_, Connection>, String> {
+        self.0.lock().map_err(|e| e.to_string())
+    }
+}
 
 fn get_db_path() -> PathBuf {
     let mut path = std::env::current_exe()
@@ -210,7 +218,11 @@ pub(crate) fn seed_defaults(conn: &Connection) -> Result<(), rusqlite::Error> {
             |r| r.get(0),
         )
         .unwrap_or_default();
-    let default_vendor = if prior_email.is_empty() { "none" } else { "anker" };
+    let default_vendor = if prior_email.is_empty() {
+        "none"
+    } else {
+        "anker"
+    };
     conn.execute(
         "INSERT OR IGNORE INTO settings (key, value) VALUES ('vendor', ?1)",
         params![default_vendor],
@@ -251,8 +263,7 @@ pub(crate) fn seed_defaults(conn: &Connection) -> Result<(), rusqlite::Error> {
             [],
         )?;
     }
-    let count: i64 =
-        conn.query_row("SELECT COUNT(*) FROM betreiber_perioden", [], |r| r.get(0))?;
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM betreiber_perioden", [], |r| r.get(0))?;
     if count == 0 {
         conn.execute(
             "INSERT INTO betreiber_perioden (effective_from, modus)
@@ -276,10 +287,7 @@ pub(crate) fn get_cents_opt(r: &rusqlite::Row, idx: usize) -> rusqlite::Result<O
     Ok(v.map(|f| f.round() as i64))
 }
 
-pub(crate) fn get_setting(
-    conn: &Connection,
-    key: &str,
-) -> Result<Option<String>, rusqlite::Error> {
+pub(crate) fn get_setting(conn: &Connection, key: &str) -> Result<Option<String>, rusqlite::Error> {
     conn.query_row(
         "SELECT value FROM settings WHERE key = ?1",
         params![key],

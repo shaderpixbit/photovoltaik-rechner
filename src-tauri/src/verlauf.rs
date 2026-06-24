@@ -87,6 +87,18 @@ pub(crate) fn load_stromtarif_perioden(
     Ok(rows)
 }
 
+/// Wählt den am `date` gültigen Eintrag — den letzten, dessen `effective_from`
+/// ≤ `date` ist. Die Verlaufslisten werden `ORDER BY effective_from ASC`
+/// geladen, deshalb genügt `.last()`. `None`, wenn kein Eintrag das Datum deckt
+/// (z.B. vor dem ersten `effective_from`).
+fn latest_effective<'a, T>(
+    perioden: &'a [T],
+    date: &str,
+    effective_from: impl Fn(&T) -> &str,
+) -> Option<&'a T> {
+    perioden.iter().filter(|p| effective_from(p) <= date).last()
+}
+
 /// Liefert Arbeitspreis (€/kWh, `f64`) und Grundgebühr (Cents/Monat, `i64`) am Stichtag.
 /// Fällt auf das Setting `strom_bezugspreis` zurück, wenn kein Eintrag existiert.
 pub(crate) fn stromtarif_for(
@@ -94,57 +106,30 @@ pub(crate) fn stromtarif_for(
     date: &str,
     fallback_arbeitspreis: f64,
 ) -> (f64, i64) {
-    let mut arbeit = fallback_arbeitspreis;
-    let mut grund: i64 = 0;
-    let mut hit = false;
-    for p in perioden {
-        if p.effective_from.as_str() <= date {
-            arbeit = p.arbeitspreis_eur_per_kwh;
-            grund = p.grundgebuehr_eur_per_monat;
-            hit = true;
-        }
-    }
-    if !hit {
-        (fallback_arbeitspreis, 0)
-    } else {
-        (arbeit, grund)
+    match latest_effective(perioden, date, |p| &p.effective_from) {
+        Some(p) => (p.arbeitspreis_eur_per_kwh, p.grundgebuehr_eur_per_monat),
+        None => (fallback_arbeitspreis, 0),
     }
 }
 
 /// Picks the modus active on `date` (the latest period whose effective_from ≤ date).
 pub(crate) fn modus_for(perioden: &[UstPeriode], date: &str) -> String {
-    let mut chosen = "regel".to_string();
-    for p in perioden {
-        if p.effective_from.as_str() <= date {
-            chosen = p.modus.clone();
-        }
-    }
-    chosen
+    latest_effective(perioden, date, |p| &p.effective_from)
+        .map(|p| p.modus.clone())
+        .unwrap_or_else(|| "regel".to_string())
 }
 
 pub(crate) fn betreiber_modus_for(perioden: &[BetreiberPeriode], date: &str) -> String {
-    let mut chosen = "gewerblich".to_string();
-    for p in perioden {
-        if p.effective_from.as_str() <= date {
-            chosen = p.modus.clone();
-        }
-    }
-    chosen
+    latest_effective(perioden, date, |p| &p.effective_from)
+        .map(|p| p.modus.clone())
+        .unwrap_or_else(|| "gewerblich".to_string())
 }
 
 /// Returns the vergütungs-satz (€/kWh) and modell active on `date`, or None if
 /// no period covers it (e.g. before the first effective_from).
-pub(crate) fn verguetung_for(
-    perioden: &[VerguetungPeriode],
-    date: &str,
-) -> Option<(f64, String)> {
-    let mut chosen: Option<(f64, String)> = None;
-    for p in perioden {
-        if p.effective_from.as_str() <= date {
-            chosen = Some((p.satz_ct_per_kwh / 100.0, p.modell.clone()));
-        }
-    }
-    chosen
+pub(crate) fn verguetung_for(perioden: &[VerguetungPeriode], date: &str) -> Option<(f64, String)> {
+    latest_effective(perioden, date, |p| &p.effective_from)
+        .map(|p| (p.satz_ct_per_kwh / 100.0, p.modell.clone()))
 }
 
 #[cfg(test)]

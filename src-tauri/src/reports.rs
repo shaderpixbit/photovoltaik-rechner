@@ -14,11 +14,10 @@ use rusqlite::{params, Connection, OptionalExtension};
 use tauri::{command, State};
 
 use crate::afa::{afa_for_year, restbuchwert_bis, sonder_afa_for_year};
-use crate::crud::list_assets_internal;
+use crate::crud::{list_assets_internal, map_daily, DAILY_COLS};
 use crate::db::{get_setting_f64, DbState};
 use crate::types::{
-    round_to_cents, Aggregat, DailyProduction, DashboardSnapshot, EuerReport,
-    ExpectedEinspeisung, UstvaReport,
+    round_to_cents, Aggregat, DashboardSnapshot, EuerReport, ExpectedEinspeisung, UstvaReport,
 };
 use crate::verlauf::{
     betreiber_modus_for, load_betreiber_perioden, load_perioden, load_stromtarif_perioden,
@@ -97,7 +96,7 @@ pub fn aggregate_production(
     periode: String,
     jahr: Option<i32>,
 ) -> Result<Vec<Aggregat>, String> {
-    let db = state.0.lock().map_err(|e| e.to_string())?;
+    let db = state.inner().conn()?;
     aggregate_production_for(&db, &periode, jahr)
 }
 
@@ -115,22 +114,9 @@ pub(crate) fn dashboard_for(
 
     let heute = conn
         .query_row(
-            "SELECT date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh,
-                    speicher_laden_kwh, speicher_entladen_kwh, notiz
-             FROM daily_production WHERE date = ?1",
+            &format!("SELECT {DAILY_COLS} FROM daily_production WHERE date = ?1"),
             params![today_iso],
-            |r| {
-                Ok(DailyProduction {
-                    date: r.get(0)?,
-                    erzeugung_kwh: r.get(1)?,
-                    eigenverbrauch_kwh: r.get(2)?,
-                    einspeisung_kwh: r.get(3)?,
-                    netzbezug_kwh: r.get(4)?,
-                    speicher_laden_kwh: r.get(5)?,
-                    speicher_entladen_kwh: r.get(6)?,
-                    notiz: r.get(7)?,
-                })
-            },
+            map_daily,
         )
         .optional()
         .map_err(|e| e.to_string())?;
@@ -150,23 +136,12 @@ pub(crate) fn dashboard_for(
 
     let max_tag = conn
         .query_row(
-            "SELECT date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh,
-                    speicher_laden_kwh, speicher_entladen_kwh, notiz
-             FROM daily_production
-             ORDER BY erzeugung_kwh DESC LIMIT 1",
+            &format!(
+                "SELECT {DAILY_COLS} FROM daily_production
+                 ORDER BY erzeugung_kwh DESC LIMIT 1"
+            ),
             [],
-            |r| {
-                Ok(DailyProduction {
-                    date: r.get(0)?,
-                    erzeugung_kwh: r.get(1)?,
-                    eigenverbrauch_kwh: r.get(2)?,
-                    einspeisung_kwh: r.get(3)?,
-                    netzbezug_kwh: r.get(4)?,
-                    speicher_laden_kwh: r.get(5)?,
-                    speicher_entladen_kwh: r.get(6)?,
-                    notiz: r.get(7)?,
-                })
-            },
+            map_daily,
         )
         .optional()
         .map_err(|e| e.to_string())?;
@@ -222,7 +197,7 @@ pub(crate) fn dashboard_for(
 
 #[command]
 pub fn get_dashboard(state: State<DbState>) -> Result<DashboardSnapshot, String> {
-    let db = state.0.lock().map_err(|e| e.to_string())?;
+    let db = state.inner().conn()?;
     dashboard_for(&db, Local::now().date_naive())
 }
 
@@ -238,23 +213,14 @@ pub(crate) fn euer_for(conn: &Connection, jahr: i32) -> Result<EuerReport, Strin
     let jahr_start = format!("{}-01-01", jahr_str);
     let jahr_end = format!("{}-12-31", jahr_str);
 
-    let einnahmen_einspeisung_netto: i64 = conn
+    let (einnahmen_einspeisung_netto, einnahmen_ust_einsp): (i64, i64) = conn
         .query_row(
-            "SELECT COALESCE(SUM(netto), 0) FROM payouts
+            "SELECT COALESCE(SUM(netto), 0), COALESCE(SUM(ust), 0) FROM payouts
              WHERE buchung_date BETWEEN ?1 AND ?2",
             params![jahr_start, jahr_end],
-            |r| r.get::<_, f64>(0),
+            |r| Ok((r.get::<_, f64>(0)?, r.get::<_, f64>(1)?)),
         )
-        .map(|v| v.round() as i64)
-        .map_err(|e| e.to_string())?;
-    let einnahmen_ust_einsp: i64 = conn
-        .query_row(
-            "SELECT COALESCE(SUM(ust), 0) FROM payouts
-             WHERE buchung_date BETWEEN ?1 AND ?2",
-            params![jahr_start, jahr_end],
-            |r| r.get::<_, f64>(0),
-        )
-        .map(|v| v.round() as i64)
+        .map(|(n, u)| (n.round() as i64, u.round() as i64))
         .map_err(|e| e.to_string())?;
 
     // Eigenverbrauch (unentgeltliche Wertabgabe) — pro Tag den jeweils gültigen Modus.
@@ -329,8 +295,9 @@ pub(crate) fn euer_for(conn: &Connection, jahr: i32) -> Result<EuerReport, Strin
     }
 
     let einnahmen_ust = einnahmen_ust_einsp + ev_ust_cents;
-    let einnahmen =
-        einnahmen_einspeisung_netto + einnahmen_eigenverbrauch_netto + einnahmen_veraeusserung_netto;
+    let einnahmen = einnahmen_einspeisung_netto
+        + einnahmen_eigenverbrauch_netto
+        + einnahmen_veraeusserung_netto;
     let ausgaben =
         ausgaben_betrieb_netto + ausgaben_afa + ausgaben_sonder_afa + ausgaben_restbuchwert_abgang;
     let gewinn = einnahmen - ausgaben;
@@ -371,7 +338,7 @@ pub(crate) fn euer_for(conn: &Connection, jahr: i32) -> Result<EuerReport, Strin
 
 #[command]
 pub fn get_euer(state: State<DbState>, jahr: i32) -> Result<EuerReport, String> {
-    let db = state.0.lock().map_err(|e| e.to_string())?;
+    let db = state.inner().conn()?;
     euer_for(&db, jahr)
 }
 
@@ -484,7 +451,7 @@ pub fn get_ustva(
     jahr: i32,
     monat: Option<i32>,
 ) -> Result<UstvaReport, String> {
-    let db = state.0.lock().map_err(|e| e.to_string())?;
+    let db = state.inner().conn()?;
     ustva_for(&db, jahr, monat)
 }
 
@@ -541,7 +508,7 @@ pub fn get_expected_einspeisung(
     jahr: i32,
     monat: Option<i32>,
 ) -> Result<ExpectedEinspeisung, String> {
-    let db = state.0.lock().map_err(|e| e.to_string())?;
+    let db = state.inner().conn()?;
     expected_einspeisung_for(&db, jahr, monat)
 }
 

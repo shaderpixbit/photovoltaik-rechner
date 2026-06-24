@@ -17,35 +17,40 @@ use crate::verlauf::{
 
 // ── Tageserfassung ──────────────────────────────────────────────────────────
 
+/// Spaltenliste + Row-Mapper für `daily_production`. Wird von allen Lesern
+/// geteilt (crud, reports, exports), damit eine neue Spalte nur an einer
+/// Stelle nachgezogen werden muss. Reihenfolge muss zu `map_daily` passen.
+pub(crate) const DAILY_COLS: &str =
+    "date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh,
+     speicher_laden_kwh, speicher_entladen_kwh, notiz";
+
+pub(crate) fn map_daily(r: &rusqlite::Row) -> rusqlite::Result<DailyProduction> {
+    Ok(DailyProduction {
+        date: r.get(0)?,
+        erzeugung_kwh: r.get(1)?,
+        eigenverbrauch_kwh: r.get(2)?,
+        einspeisung_kwh: r.get(3)?,
+        netzbezug_kwh: r.get(4)?,
+        speicher_laden_kwh: r.get(5)?,
+        speicher_entladen_kwh: r.get(6)?,
+        notiz: r.get(7)?,
+    })
+}
+
 #[command]
 pub fn list_daily_range(
     state: State<DbState>,
     from: String,
     to: String,
 ) -> Result<Vec<DailyProduction>, String> {
-    let db = state.0.lock().map_err(|e| e.to_string())?;
-    let mut stmt = db
-        .prepare(
-            "SELECT date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh,
-                    speicher_laden_kwh, speicher_entladen_kwh, notiz
-             FROM daily_production
-             WHERE date BETWEEN ?1 AND ?2
-             ORDER BY date ASC",
-        )
-        .map_err(|e| e.to_string())?;
+    let db = state.inner().conn()?;
+    let sql = format!(
+        "SELECT {DAILY_COLS} FROM daily_production
+         WHERE date BETWEEN ?1 AND ?2 ORDER BY date ASC"
+    );
+    let mut stmt = db.prepare(&sql).map_err(|e| e.to_string())?;
     let rows: Vec<DailyProduction> = stmt
-        .query_map(params![from, to], |r| {
-            Ok(DailyProduction {
-                date: r.get(0)?,
-                erzeugung_kwh: r.get(1)?,
-                eigenverbrauch_kwh: r.get(2)?,
-                einspeisung_kwh: r.get(3)?,
-                netzbezug_kwh: r.get(4)?,
-                speicher_laden_kwh: r.get(5)?,
-                speicher_entladen_kwh: r.get(6)?,
-                notiz: r.get(7)?,
-            })
-        })
+        .query_map(params![from, to], map_daily)
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
@@ -53,36 +58,17 @@ pub fn list_daily_range(
 }
 
 #[command]
-pub fn get_daily(
-    state: State<DbState>,
-    date: String,
-) -> Result<Option<DailyProduction>, String> {
-    let db = state.0.lock().map_err(|e| e.to_string())?;
-    db.query_row(
-        "SELECT date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh,
-                speicher_laden_kwh, speicher_entladen_kwh, notiz
-         FROM daily_production WHERE date = ?1",
-        params![date],
-        |r| {
-            Ok(DailyProduction {
-                date: r.get(0)?,
-                erzeugung_kwh: r.get(1)?,
-                eigenverbrauch_kwh: r.get(2)?,
-                einspeisung_kwh: r.get(3)?,
-                netzbezug_kwh: r.get(4)?,
-                speicher_laden_kwh: r.get(5)?,
-                speicher_entladen_kwh: r.get(6)?,
-                notiz: r.get(7)?,
-            })
-        },
-    )
-    .optional()
-    .map_err(|e| e.to_string())
+pub fn get_daily(state: State<DbState>, date: String) -> Result<Option<DailyProduction>, String> {
+    let db = state.inner().conn()?;
+    let sql = format!("SELECT {DAILY_COLS} FROM daily_production WHERE date = ?1");
+    db.query_row(&sql, params![date], map_daily)
+        .optional()
+        .map_err(|e| e.to_string())
 }
 
 #[command]
 pub fn upsert_daily(state: State<DbState>, entry: DailyProduction) -> Result<(), String> {
-    let db = state.0.lock().map_err(|e| e.to_string())?;
+    let db = state.inner().conn()?;
     db.execute(
         "INSERT INTO daily_production
          (date, erzeugung_kwh, eigenverbrauch_kwh, einspeisung_kwh, netzbezug_kwh,
@@ -113,9 +99,12 @@ pub fn upsert_daily(state: State<DbState>, entry: DailyProduction) -> Result<(),
 
 #[command]
 pub fn delete_daily(state: State<DbState>, date: String) -> Result<(), String> {
-    let db = state.0.lock().map_err(|e| e.to_string())?;
-    db.execute("DELETE FROM daily_production WHERE date = ?1", params![date])
-        .map_err(|e| e.to_string())?;
+    let db = state.inner().conn()?;
+    db.execute(
+        "DELETE FROM daily_production WHERE date = ?1",
+        params![date],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -123,7 +112,7 @@ pub fn delete_daily(state: State<DbState>, date: String) -> Result<(), String> {
 
 #[command]
 pub fn list_payouts(state: State<DbState>) -> Result<Vec<Payout>, String> {
-    let db = state.0.lock().map_err(|e| e.to_string())?;
+    let db = state.inner().conn()?;
     let mut stmt = db
         .prepare(
             "SELECT id, buchung_date, zeitraum_von, zeitraum_bis,
@@ -153,7 +142,7 @@ pub fn list_payouts(state: State<DbState>) -> Result<Vec<Payout>, String> {
 
 #[command]
 pub fn upsert_payout(state: State<DbState>, payout: Payout) -> Result<i64, String> {
-    let db = state.0.lock().map_err(|e| e.to_string())?;
+    let db = state.inner().conn()?;
     if payout.id > 0 {
         db.execute(
             "UPDATE payouts SET
@@ -197,7 +186,7 @@ pub fn upsert_payout(state: State<DbState>, payout: Payout) -> Result<i64, Strin
 
 #[command]
 pub fn delete_payout(state: State<DbState>, id: i64) -> Result<(), String> {
-    let db = state.0.lock().map_err(|e| e.to_string())?;
+    let db = state.inner().conn()?;
     db.execute("DELETE FROM payouts WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -207,7 +196,7 @@ pub fn delete_payout(state: State<DbState>, id: i64) -> Result<(), String> {
 
 #[command]
 pub fn list_expenses(state: State<DbState>) -> Result<Vec<Expense>, String> {
-    let db = state.0.lock().map_err(|e| e.to_string())?;
+    let db = state.inner().conn()?;
     let mut stmt = db
         .prepare(
             "SELECT id, date, kategorie, beschreibung, netto, ust, brutto, vorsteuer_abzugsfaehig
@@ -235,7 +224,7 @@ pub fn list_expenses(state: State<DbState>) -> Result<Vec<Expense>, String> {
 
 #[command]
 pub fn upsert_expense(state: State<DbState>, expense: Expense) -> Result<i64, String> {
-    let db = state.0.lock().map_err(|e| e.to_string())?;
+    let db = state.inner().conn()?;
     let vsa: i64 = if expense.vorsteuer_abzugsfaehig { 1 } else { 0 };
     if expense.id > 0 {
         db.execute(
@@ -278,7 +267,7 @@ pub fn upsert_expense(state: State<DbState>, expense: Expense) -> Result<i64, St
 
 #[command]
 pub fn delete_expense(state: State<DbState>, id: i64) -> Result<(), String> {
-    let db = state.0.lock().map_err(|e| e.to_string())?;
+    let db = state.inner().conn()?;
     db.execute("DELETE FROM expenses WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -319,13 +308,13 @@ pub(crate) fn list_assets_internal(conn: &Connection) -> Result<Vec<Asset>, rusq
 
 #[command]
 pub fn list_assets(state: State<DbState>) -> Result<Vec<Asset>, String> {
-    let db = state.0.lock().map_err(|e| e.to_string())?;
+    let db = state.inner().conn()?;
     list_assets_internal(&db).map_err(|e| e.to_string())
 }
 
 #[command]
 pub fn upsert_asset(state: State<DbState>, asset: Asset) -> Result<i64, String> {
-    let db = state.0.lock().map_err(|e| e.to_string())?;
+    let db = state.inner().conn()?;
     if asset.id > 0 {
         db.execute(
             "UPDATE assets SET
@@ -380,7 +369,7 @@ pub fn upsert_asset(state: State<DbState>, asset: Asset) -> Result<i64, String> 
 
 #[command]
 pub fn delete_asset(state: State<DbState>, id: i64) -> Result<(), String> {
-    let db = state.0.lock().map_err(|e| e.to_string())?;
+    let db = state.inner().conn()?;
     db.execute("DELETE FROM assets WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -412,11 +401,9 @@ pub fn wipe_database(
     confirmation_token: String,
 ) -> Result<WipeSummary, String> {
     if confirmation_token != "WIPE" {
-        return Err(
-            "Ungueltiges Confirmation-Token. Erwartet: 'WIPE' (uppercase).".into(),
-        );
+        return Err("Ungueltiges Confirmation-Token. Erwartet: 'WIPE' (uppercase).".into());
     }
-    let mut db = state.0.lock().map_err(|e| e.to_string())?;
+    let mut db = state.inner().conn()?;
 
     // Counts vorher merken — fuer den UI-Toast.
     let count = |conn: &Connection, table: &str| -> i64 {
@@ -466,7 +453,7 @@ pub fn wipe_database(
 
 #[command]
 pub fn get_settings(state: State<DbState>) -> Result<Settings, String> {
-    let db = state.0.lock().map_err(|e| e.to_string())?;
+    let db = state.inner().conn()?;
     let ust_perioden = load_perioden(&db).map_err(|e| e.to_string())?;
     let betreiber_perioden = load_betreiber_perioden(&db).map_err(|e| e.to_string())?;
     let verguetung_perioden = load_verguetung_perioden(&db).map_err(|e| e.to_string())?;
@@ -508,9 +495,29 @@ pub fn get_settings(state: State<DbState>) -> Result<Settings, String> {
     })
 }
 
+/// Ersetzt den Inhalt einer Verlaufstabelle komplett: erst leeren, dann jede
+/// Zeile per `insert_sql` neu schreiben. `to_params` baut die Bind-Werte einer
+/// Zeile — `set_settings` schreibt die Verlaufstabellen so als Vollersatz.
+fn replace_perioden<T>(
+    db: &Connection,
+    table: &str,
+    insert_sql: &str,
+    items: &[T],
+    to_params: impl Fn(&T) -> Vec<Box<dyn rusqlite::ToSql>>,
+) -> Result<(), String> {
+    db.execute(&format!("DELETE FROM {table}"), [])
+        .map_err(|e| e.to_string())?;
+    for item in items {
+        let boxed = to_params(item);
+        let p: Vec<&dyn rusqlite::ToSql> = boxed.iter().map(|b| b.as_ref()).collect();
+        db.execute(insert_sql, &p[..]).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[command]
 pub fn set_settings(state: State<DbState>, settings: Settings) -> Result<(), String> {
-    let db = state.0.lock().map_err(|e| e.to_string())?;
+    let db = state.inner().conn()?;
     set_setting(&db, "ust_satz_regel", &settings.ust_satz_regel.to_string())
         .map_err(|e| e.to_string())?;
     set_setting(
@@ -561,15 +568,19 @@ pub fn set_settings(state: State<DbState>, settings: Settings) -> Result<(), Str
     )
     .map_err(|e| e.to_string())?;
 
-    db.execute("DELETE FROM ust_perioden", [])
-        .map_err(|e| e.to_string())?;
-    for p in &settings.ust_perioden {
-        db.execute(
-            "INSERT INTO ust_perioden (effective_from, modus) VALUES (?1, ?2)",
-            params![p.effective_from, p.modus],
-        )
-        .map_err(|e| e.to_string())?;
-    }
+    replace_perioden(
+        &db,
+        "ust_perioden",
+        "INSERT INTO ust_perioden (effective_from, modus) VALUES (?1, ?2)",
+        &settings.ust_perioden,
+        |p| {
+            vec![
+                Box::new(p.effective_from.clone()),
+                Box::new(p.modus.clone()),
+            ]
+        },
+    )?;
+    // Mindestens ein Eintrag, sonst greift überall der Default-Fallback.
     if settings.ust_perioden.is_empty() {
         db.execute(
             "INSERT INTO ust_perioden (effective_from, modus) VALUES ('2000-01-01', 'regel')",
@@ -578,15 +589,18 @@ pub fn set_settings(state: State<DbState>, settings: Settings) -> Result<(), Str
         .map_err(|e| e.to_string())?;
     }
 
-    db.execute("DELETE FROM betreiber_perioden", [])
-        .map_err(|e| e.to_string())?;
-    for p in &settings.betreiber_perioden {
-        db.execute(
-            "INSERT INTO betreiber_perioden (effective_from, modus) VALUES (?1, ?2)",
-            params![p.effective_from, p.modus],
-        )
-        .map_err(|e| e.to_string())?;
-    }
+    replace_perioden(
+        &db,
+        "betreiber_perioden",
+        "INSERT INTO betreiber_perioden (effective_from, modus) VALUES (?1, ?2)",
+        &settings.betreiber_perioden,
+        |p| {
+            vec![
+                Box::new(p.effective_from.clone()),
+                Box::new(p.modus.clone()),
+            ]
+        },
+    )?;
     if settings.betreiber_perioden.is_empty() {
         db.execute(
             "INSERT INTO betreiber_perioden (effective_from, modus)
@@ -596,31 +610,35 @@ pub fn set_settings(state: State<DbState>, settings: Settings) -> Result<(), Str
         .map_err(|e| e.to_string())?;
     }
 
-    db.execute("DELETE FROM verguetung_perioden", [])
-        .map_err(|e| e.to_string())?;
-    for p in &settings.verguetung_perioden {
-        db.execute(
-            "INSERT INTO verguetung_perioden (effective_from, modell, satz_ct_per_kwh)
-             VALUES (?1, ?2, ?3)",
-            params![p.effective_from, p.modell, p.satz_ct_per_kwh],
-        )
-        .map_err(|e| e.to_string())?;
-    }
+    replace_perioden(
+        &db,
+        "verguetung_perioden",
+        "INSERT INTO verguetung_perioden (effective_from, modell, satz_ct_per_kwh)
+         VALUES (?1, ?2, ?3)",
+        &settings.verguetung_perioden,
+        |p| {
+            vec![
+                Box::new(p.effective_from.clone()),
+                Box::new(p.modell.clone()),
+                Box::new(p.satz_ct_per_kwh),
+            ]
+        },
+    )?;
 
-    db.execute("DELETE FROM stromtarif_perioden", [])
-        .map_err(|e| e.to_string())?;
-    for p in &settings.stromtarif_perioden {
-        db.execute(
-            "INSERT INTO stromtarif_perioden
-             (effective_from, arbeitspreis_eur_per_kwh, grundgebuehr_eur_per_monat)
-             VALUES (?1, ?2, ?3)",
-            params![
-                p.effective_from,
-                p.arbeitspreis_eur_per_kwh,
-                p.grundgebuehr_eur_per_monat
-            ],
-        )
-        .map_err(|e| e.to_string())?;
-    }
+    replace_perioden(
+        &db,
+        "stromtarif_perioden",
+        "INSERT INTO stromtarif_perioden
+         (effective_from, arbeitspreis_eur_per_kwh, grundgebuehr_eur_per_monat)
+         VALUES (?1, ?2, ?3)",
+        &settings.stromtarif_perioden,
+        |p| {
+            vec![
+                Box::new(p.effective_from.clone()),
+                Box::new(p.arbeitspreis_eur_per_kwh),
+                Box::new(p.grundgebuehr_eur_per_monat),
+            ]
+        },
+    )?;
     Ok(())
 }

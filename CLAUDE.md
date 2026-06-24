@@ -31,6 +31,17 @@ bun run tauri build        # Release-Installer
   passen aber zu späteren `bunx shadcn-svelte add …`-Komponenten.
 - Bun als Package-Manager.
 
+### Rust-Modulaufteilung (`src-tauri/src/`)
+`lib.rs` ist nur noch Bootstrap + `invoke_handler`-Registrierung. Die Logik
+liegt in Modulen:
+- `types.rs` — Serde-Structs (spiegeln `src/lib/types.ts`)
+- `db.rs` — Connection, Schema, Migrationen, Settings-KV-Helper, `DbState::conn()`
+- `verlauf.rs` — Verlaufstabellen + `latest_effective`-Lookup
+- `afa.rs` — reine AfA-Mathematik
+- `crud.rs` — CRUD-Commands je Entität (geteilter `DAILY_COLS` + `map_daily`)
+- `reports.rs` — Dashboard, EÜR, UStVA, erwartete Einspeisung, Aggregate
+- `exports.rs` — CSV, JSON-Backup, Vendor-Stub
+
 ### Datenfluss
 SQLite-Datenbank `photovoltaik.db` neben der Executable, WAL-Journal (lokale
 App, kein SMB-Mehrclient-Szenario wie bei `ampel-ramp`). Frontend ruft Tauri-
@@ -38,7 +49,7 @@ Commands ausschließlich über `src/lib/api.ts` (typed wrappers + `ensureTauri()
 `src/lib/types.ts` spiegelt die Rust-Structs feldweise — bei Änderung beide
 Dateien synchron halten, es gibt kein Codegen.
 
-### Schema (`src-tauri/src/lib.rs`)
+### Schema (`src-tauri/src/db.rs`)
 | Tabelle | Inhalt |
 |---|---|
 | `daily_production` | Tagessumme: `date` (PK), Erzeugung, Eigenverbrauch, Einspeisung, optional Netzbezug, Notiz |
@@ -48,7 +59,7 @@ Dateien synchron halten, es gibt kein Codegen.
 | `ust_perioden` | Verlauf USt-Modus (`regel` / `kleinunternehmer` / `nullsteuer`) |
 | `betreiber_perioden` | Verlauf Betreiber-Status (`gewerblich` / `privat` = §3 Nr. 72 EStG) |
 | `verguetung_perioden` | Verlauf Einspeisevergütung: `effective_from`, `modell` (`ueberschuss` / `voll` / `direktvermarktung`), `satz_ct_per_kwh` |
-| `settings` | Key-Value: `ust_satz_regel`, `eigenverbrauch_preis`, `strom_bezugspreis`, `anker_api_url`, `anker_api_token` |
+| `settings` | Key-Value: `ust_satz_regel`, `eigenverbrauch_preis`, `strom_bezugspreis`, `vendor`, `anker_email`/`anker_password`/`anker_country`, `solaredge_api_key`/`solaredge_site_id` |
 
 Schema-Migrationen laufen idempotent in `create_schema()` beim App-Start
 (`CREATE TABLE IF NOT EXISTS …`, additive Spalten via `add_column_if_missing`).
@@ -57,7 +68,8 @@ Es gibt kein separates Migration-Tool.
 ### Drei orthogonale Verlaufs-Achsen
 Status ist immer eine **Verlaufstabelle**, nicht ein einzelner Schalter — die
 App wählt für jede Buchung den am Tagesdatum gültigen Eintrag. Helper:
-`modus_for` / `betreiber_modus_for` / `verguetung_for` in `lib.rs`.
+`modus_for` / `betreiber_modus_for` / `verguetung_for` in `verlauf.rs`
+(alle über den gemeinsamen `latest_effective`-Lookup).
 
 **USt-Modus** (`ust_perioden`) — wirkt auf UStVA + Vorsteuer:
 - `regel` — 19% USt auf Einspeisung, Eigenverbrauch wird als unentgeltliche
@@ -90,7 +102,7 @@ den Betreiber-Status am Jahresende. UStVA (`get_ustva`) verwendet den USt-Modus
 am Periodenende.
 
 ### AfA und Anlagenverkauf
-`afa_for_year()` + `sonder_afa_for_year()` in `src-tauri/src/lib.rs`:
+`afa_for_year()` + `sonder_afa_for_year()` in `src-tauri/src/afa.rs`:
 AfA-Basis = `anschaffung_netto + anschaffung_ust` (im Nullsteuer-Fall
 USt = 0 in `assets`). Drei Aspekte:
 
