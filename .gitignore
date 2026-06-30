@@ -13,7 +13,6 @@ photovoltaik.db-wal
 photovoltaik.db-shm
 *.cargo
 *.direnv
-*.toml
 
 # Sidecar build-artefakte (Anker-Solix / SolarEdge Python -> PyInstaller)
 src-tauri/binaries/anker-solix-*
