@@ -1,6 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "bundle": {
-    "externalBin": ["binaries/anker-solix", "binaries/solaredge"]
+    "externalBin": ["binaries/anker-solix", "binaries/solaredge"],
+    "targets": ["deb", "rpm"]
   }
 }
